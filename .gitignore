@@ -54,3 +54,4 @@ server.log
 /skills/
 # local reference clones (storytold artcraft/photocraft)
 /reference/
+tool-results/
