@@ -70,7 +70,8 @@ amp_y = 0.75 + 0.5 * ys
 field_base = (mask * amp_y).astype(np.float32)
 
 # ---------------- render frames ----------------
-N_FRAMES = 36
+N_FRAMES = 72          # more frames + longer delay = slow AND smooth
+DURATION_MS = 110      # ~8s loop (4x slower than the original 2s)
 A = 14.0   # horizontal drift amplitude (px)
 B = 0.0    # pure horizontal motion (no vertical bob)
 
@@ -89,7 +90,7 @@ for i in range(N_FRAMES):
     frames.append(rgb)
 
 # QA preview frame (quarter-phase = max displacement)
-Image.fromarray(frames[9]).save(PREVIEW)
+Image.fromarray(frames[N_FRAMES // 4]).save(PREVIEW)
 
 # ---------------- save looping GIF ----------------
 GIF_W = 800
@@ -102,7 +103,7 @@ pil_frames = [
 ]
 pil_frames[0].save(
     OUT_GIF, save_all=True, append_images=pil_frames[1:],
-    loop=0, duration=55, disposal=1, optimize=False,
+    loop=0, duration=DURATION_MS, disposal=1, optimize=False,
 )
 print(f"saved: {OUT_GIF}  ({os.path.getsize(OUT_GIF)/1e6:.2f} MB, "
-      f"{GIF_W}x{gih}, {N_FRAMES} frames, ~{N_FRAMES*55/1000:.2f}s loop)")
+      f"{GIF_W}x{gih}, {N_FRAMES} frames, ~{N_FRAMES*DURATION_MS/1000:.2f}s loop)")
