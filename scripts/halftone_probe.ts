@@ -81,6 +81,19 @@ const scenarios: Array<{ tag: string; p: Partial<HalftoneParams> }> = [
   { tag: 'bw-fixed', p: { tone: 'bw', threshold: 0.5 } },
   { tag: 'bw-level65', p: { tone: 'bw', threshold: 0.65 } },
   { tag: 'bw-cell14', p: { tone: 'bw', threshold: 0.5, cell: 14 } },
+  { tag: 'bw-lights-rec', p: { tone: 'bw', lights: -0.5 } },
+  { tag: 'bw-darks-lift', p: { tone: 'bw', darks: 0.5 } },
+  {
+    tag: 'bw-spot-face',
+    p: {
+      tone: 'bw',
+      spotEnabled: true,
+      spotX: 0.5,
+      spotY: 0.42,
+      spotR: 0.18,
+      spotExposure: -0.45,
+    },
+  },
 ]
 
 for (const s of scenarios) {
@@ -191,6 +204,73 @@ async function svgScenario(tag: string, p: Partial<HalftoneParams>) {
     .toFile(`${OUT}/vec-crop8x-${tag}.png`)
   await sharp(Buffer.from(svg)).toFile(`${OUT}/vec-${tag}.svg`)
   void info
+}
+
+/* ------------------------------------------------------------------ */
+/* Split-tone levels + targeted region: synthetic direction checks     */
+/* ------------------------------------------------------------------ */
+
+/** mean ink (1 - luminance) of left/right halves after adjustment;
+ *  left = 50% gray (ink 0.5), right = 25% gray (ink 0.25) */
+function meanInk(adjust: Partial<HalftoneParams>): { left: number; right: number } {
+  const cw = 200
+  const ch = 100
+  const data = new Uint8ClampedArray(cw * ch * 4)
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const v = (x < cw / 2 ? 0.5 : 0.75) * 255
+      const j = (y * cw + x) * 4
+      data[j] = v
+      data[j + 1] = v
+      data[j + 2] = v
+      data[j + 3] = 255
+    }
+  }
+  const pp: HalftoneParams = { ...DEFAULT_PARAMS, ...adjust }
+  adjustImageData({ data, width: cw, height: ch } as unknown as ImageData, pp)
+  let ls = 0
+  let rs = 0
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const j = (y * cw + x) * 4
+      const lum = (0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2]) / 255
+      if (x < cw / 2) ls += 1 - lum
+      else rs += 1 - lum
+    }
+  }
+  const half = (cw * ch) / 2
+  return { left: ls / half, right: rs / half }
+}
+
+console.log('\nSplit-tone levels + target region (left 50% gray / right 25% ink):')
+{
+  const base = meanInk({})
+  const li = meanInk({ lights: -0.6 })
+  const da = meanInk({ darks: 0.6 })
+  const spL = meanInk({ spotEnabled: true, spotX: 0.25, spotY: 0.5, spotR: 0.2, spotExposure: -0.5 })
+  const spR = meanInk({ spotEnabled: true, spotX: 0.75, spotY: 0.5, spotR: 0.2, spotExposure: -0.5 })
+  console.log(
+    `  baseline         left=${base.left.toFixed(3)} right=${base.right.toFixed(3)}`,
+  )
+  console.log(
+    `  lights=-0.6      left=${li.left.toFixed(3)} right=${li.right.toFixed(3)}`,
+  )
+  console.log(
+    `  darks=+0.6       left=${da.left.toFixed(3)} right=${da.right.toFixed(3)}`,
+  )
+  console.log(
+    `  spot(-0.5)@left  left=${spL.left.toFixed(3)} right=${spR.right.toFixed(3)}`,
+  )
+  const t1 = li.right > base.right + 0.2 && li.left > base.left + 0.05
+  const t2 = da.left < base.left - 0.08 && Math.abs(da.right - base.right) < 0.02
+  const t3 = spL.left > base.left + 0.08 && Math.abs(spL.right - base.right) < 0.02
+  const t4 = spR.right > base.right + 0.05 && Math.abs(spR.left - base.left) < 0.02
+  console.log(
+    `  lights darken highlights: ${t1 ? 'PASS' : 'FAIL'} · darks lift shadows only: ${t2 ? 'PASS' : 'FAIL'}`,
+  )
+  console.log(
+    `  spot hits its region only (left): ${t3 ? 'PASS' : 'FAIL'} · (right): ${t4 ? 'PASS' : 'FAIL'}`,
+  )
 }
 
 console.log('\nSVG vector parity (synthetic 50% / 25% ink halves):')

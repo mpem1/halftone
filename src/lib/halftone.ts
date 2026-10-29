@@ -59,6 +59,13 @@ export interface HalftoneParams {
   threshold: number // 0..1 B&W brightness pivot (0.5 neutral) — never binarizes the source
   saturation: number // -1..1 (0 = unchanged, applies to tone 'color')
   contrast: number // -1..1 (0 = unchanged)
+  lights: number // -1..1 split-tone: − recovers blown highlights, + brightens them
+  darks: number // -1..1 split-tone: + opens plugged shadows, − deepens them
+  spotEnabled: boolean // targeted exposure region active
+  spotX: number // region center, 0..1 of image width
+  spotY: number // region center, 0..1 of image height
+  spotR: number // region radius as fraction of max(w,h) — circular at any resolution
+  spotExposure: number // -1..1 luminance shift inside the region (feathered edge)
   kStrength: number // 0..1 black-plate strength in CMYK mode
   plateFilter: PlateFilter // which CMYK plate(s) to show
   uniformPlates: boolean // CMYK: all plates share one angle (Photoshop Color Halftone look) vs rosette offsets
@@ -81,6 +88,13 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   threshold: 0.5,
   saturation: 0,
   contrast: 0,
+  lights: 0,
+  darks: 0,
+  spotEnabled: false,
+  spotX: 0.5,
+  spotY: 0.5,
+  spotR: 0.22,
+  spotExposure: 0,
   kStrength: 0.55,
   plateFilter: 'all',
   uniformPlates: false,
@@ -128,12 +142,36 @@ function hexToRgb01(hex: string): [number, number, number] {
  *  with dithered edges instead of a dot grid. p.threshold is therefore a
  *  brightness pivot (0.5 = neutral, up to ±0.6) that shifts the tone so
  *  users can weigh the output darker or lighter — dots survive at any
- *  setting, exactly like weighing exposure before screening in a print shop. */
+ *  setting, exactly like weighing exposure before screening in a print shop.
+ *
+ *  Split-tone levels: p.lights / p.darks dodge+burn the two halves of the
+ *  tone range independently (smoothstep-weighted so midtones blend between
+ *  both). Targeted region: p.spotExposure shifts luminance inside a feathered
+ *  circular area (center/radius in normalized coords → resolution-independent,
+ *  preview and export land identically). Both preserve hue by scaling RGB
+ *  toward the new luminance. */
 export function adjustImageData(img: ImageData, p: HalftoneParams): void {
   const sat = p.tone === 'color' ? 1 + p.saturation : 0
   const con = 1 + p.contrast
   const shift = p.tone === 'bw' ? (p.threshold - 0.5) * 1.2 : 0
+  const li = p.lights
+  const da = p.darks
+  const split = li !== 0 || da !== 0
+  const spotAmt = p.spotEnabled ? p.spotExposure : 0
+  const spotOn = spotAmt !== 0
+  const w = img.width
+  // spot geometry in pixels (radius normalized by max dimension → circle)
+  const scx = p.spotX * w
+  const scy = p.spotY * img.height
+  const scr = Math.max(4, p.spotR * Math.max(w, img.height))
+  const FEATHER = 0.45 // outer fraction of the radius that ramps to zero
   const d = img.data
+  const ss = (t: number) => {
+    const c = t < 0 ? 0 : t > 1 ? 1 : t
+    return c * c * (3 - 2 * c)
+  }
+  let px = 0
+  let py = 0
   for (let i = 0; i < d.length; i += 4) {
     let r = d[i] / 255
     let g = d[i + 1] / 255
@@ -149,6 +187,35 @@ export function adjustImageData(img: ImageData, p: HalftoneParams): void {
       g = (g - 0.5) * con + 0.5
       b = (b - 0.5) * con + 0.5
     }
+    // split-tone levels + targeted exposure: luminance shift, hue preserved
+    if (split || spotOn) {
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b
+      let sh = 0
+      if (split) {
+        sh += li * 0.5 * ss((lum - 0.25) / 0.5)
+        sh += da * 0.5 * ss((0.75 - lum) / 0.5)
+      }
+      if (spotOn) {
+        const dx = px + 0.5 - scx
+        const dy = py + 0.5 - scy
+        const dist = Math.sqrt(dx * dx + dy * dy) / scr
+        if (dist < 1) {
+          sh += spotAmt * (dist < 1 - FEATHER ? 1 : ss((1 - dist) / FEATHER))
+        }
+      }
+      if (sh !== 0) {
+        if (lum > 0.02) {
+          const f = (lum + sh) / lum
+          r *= f
+          g *= f
+          b *= f
+        } else {
+          r += sh
+          g += sh
+          b += sh
+        }
+      }
+    }
     if (shift !== 0) {
       r += shift
       g += shift
@@ -158,6 +225,11 @@ export function adjustImageData(img: ImageData, p: HalftoneParams): void {
     d[i + 1] = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
     d[i + 2] = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
     d[i + 3] = 255
+    px++
+    if (px === w) {
+      px = 0
+      py++
+    }
   }
 }
 

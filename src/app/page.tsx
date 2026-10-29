@@ -15,6 +15,7 @@ import {
   ZoomIn,
   ZoomOut,
   Maximize,
+  Crosshair,
 } from 'lucide-react'
 import {
   DEFAULT_PARAMS,
@@ -125,8 +126,11 @@ export default function HalftoneStudio() {
   const viewStateRef = useRef<ViewState>({ z: 1, x: 0, y: 0 })
   const [dragging, setDragging] = useState(false)
   const [fitted, setFitted] = useState(false)
+  const [spotMode, setSpotMode] = useState(false) // target-region editing tool
   const fitPendingRef = useRef(true)
   const fitZRef = useRef(1)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
+  const spotDragRef = useRef<null | { mode: 'move' | 'resize'; ox: number; oy: number }>(null)
   const pointersRef = useRef(new Map<number, { x: number; y: number }>())
   const pinchRef = useRef<{
     dist: number
@@ -346,9 +350,135 @@ export default function HalftoneStudio() {
     }
   }, [params])
 
+  // --- target-region (dodge & burn) tool -------------------------------
+  const clamp01 = (v: number) => (v < 0 ? 0 : v > 1 ? 1 : v)
+
+  /** client point → working-canvas pixel coords (transform-aware) */
+  const spotImagePoint = (e: { clientX: number; clientY: number }) => {
+    const cv = viewRef.current!
+    const rect = cv.getBoundingClientRect()
+    return {
+      x: ((e.clientX - rect.left) / rect.width) * cv.width,
+      y: ((e.clientY - rect.top) / rect.height) * cv.height,
+    }
+  }
+
+  const onSpotDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (spotDragRef.current) return // a drag is already in progress
+    const cv = viewRef.current
+    const stage = stageRef.current
+    if (!cv || !cv.width || !stage) return
+    stage.setPointerCapture(e.pointerId)
+    const pt = spotImagePoint(e)
+    const w = cv.width
+    const h = cv.height
+    const cx = params.spotX * w
+    const cy = params.spotY * h
+    const r = Math.max(4, params.spotR * Math.max(w, h))
+    const d = Math.hypot(pt.x - cx, pt.y - cy)
+    const tol = Math.max(6, 12 / viewStateRef.current.z)
+    if (params.spotEnabled && Math.abs(d - r) <= tol) {
+      spotDragRef.current = { mode: 'resize', ox: 0, oy: 0 } // grab the edge ring
+    } else if (params.spotEnabled && d < r) {
+      spotDragRef.current = { mode: 'move', ox: pt.x - cx, oy: pt.y - cy }
+    } else {
+      // place a new region under the pointer, then drag outward to size it
+      spotDragRef.current = { mode: 'resize', ox: 0, oy: 0 }
+      setParams((p) => ({
+        ...p,
+        spotEnabled: true,
+        spotX: clamp01(pt.x / w),
+        spotY: clamp01(pt.y / h),
+        spotR: 0.06,
+      }))
+    }
+  }
+
+  const onSpotMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const sd = spotDragRef.current
+    const cv = viewRef.current
+    if (!sd || !cv || !cv.width) return
+    const pt = spotImagePoint(e)
+    const w = cv.width
+    const h = cv.height
+    if (sd.mode === 'move') {
+      setParams((p) => ({
+        ...p,
+        spotX: clamp01((pt.x - sd.ox) / w),
+        spotY: clamp01((pt.y - sd.oy) / h),
+      }))
+    } else {
+      setParams((p) => {
+        const cx = p.spotX * w
+        const cy = p.spotY * h
+        const r = Math.hypot(pt.x - cx, pt.y - cy) / Math.max(w, h)
+        return { ...p, spotR: Math.min(0.75, Math.max(0.04, r)) }
+      })
+    }
+  }
+
+  const toggleSpotMode = () => {
+    const next = !spotMode
+    setSpotMode(next)
+    setParams((p) => ({ ...p, spotEnabled: next }))
+  }
+
+  /** dashed circle + handles over the preview, in image coords so the CSS
+   *  transform keeps it glued to the artwork at any zoom/pan */
+  const drawSpotOverlay = useCallback(() => {
+    const ov = overlayRef.current
+    const cv = viewRef.current
+    if (!ov || !cv || !cv.width) return
+    if (ov.width !== cv.width || ov.height !== cv.height) {
+      ov.width = cv.width
+      ov.height = cv.height
+    }
+    const ctx = ov.getContext('2d')!
+    ctx.clearRect(0, 0, ov.width, ov.height)
+    if (!spotMode || !fitted) return
+    const w = ov.width
+    const h = ov.height
+    const cx = params.spotX * w
+    const cy = params.spotY * h
+    const r = Math.max(4, params.spotR * Math.max(w, h))
+    const z = viewStateRef.current.z
+    const amber = params.spotEnabled && params.spotExposure !== 0 ? '#f59e0b' : 'rgba(245,158,11,0.6)'
+    ctx.lineCap = 'round'
+    ctx.setLineDash([8 / z, 6 / z])
+    // dark halo pass so the ring reads on any background, then the amber line
+    ctx.beginPath()
+    ctx.arc(cx, cy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(0,0,0,0.65)'
+    ctx.lineWidth = Math.max(3, 4.6 / z)
+    ctx.stroke()
+    ctx.strokeStyle = amber
+    ctx.lineWidth = Math.max(1.6, 2.2 / z)
+    ctx.stroke()
+    ctx.setLineDash([])
+    const cl = Math.max(6, 9 / z) // center crosshair
+    ctx.beginPath()
+    ctx.moveTo(cx - cl, cy)
+    ctx.lineTo(cx + cl, cy)
+    ctx.moveTo(cx, cy - cl)
+    ctx.lineTo(cx, cy + cl)
+    ctx.stroke()
+    ctx.fillStyle = '#f59e0b' // edge resize handle
+    ctx.beginPath()
+    ctx.arc(cx + r, cy, Math.max(3, 5 / z), 0, Math.PI * 2)
+    ctx.fill()
+  }, [spotMode, fitted, params.spotX, params.spotY, params.spotR, params.spotEnabled, params.spotExposure])
+
+  useEffect(() => {
+    drawSpotOverlay()
+  }, [drawSpotOverlay])
+
   // --- stage pointer handling: drag to pan, pinch to zoom ---
   const onStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest('[data-no-pan]')) return
+    if (spotMode && ready) {
+      onSpotDown(e)
+      return
+    }
     const stage = stageRef.current
     if (!stage) return
     stage.setPointerCapture(e.pointerId)
@@ -369,6 +499,10 @@ export default function HalftoneStudio() {
   }
 
   const onStagePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (spotDragRef.current) {
+      onSpotMove(e)
+      return
+    }
     const pts = pointersRef.current
     const prev = pts.get(e.pointerId)
     if (!prev) return
@@ -395,6 +529,7 @@ export default function HalftoneStudio() {
   }
 
   const onStagePointerEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    spotDragRef.current = null
     pointersRef.current.delete(e.pointerId)
     if (pointersRef.current.size < 2) pinchRef.current = null
     if (pointersRef.current.size === 0) setDragging(false)
@@ -480,7 +615,16 @@ export default function HalftoneStudio() {
                   style={{
                     transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
                     imageRendering: view.z >= 2 ? 'pixelated' : 'auto',
-                    cursor: dragging ? 'grabbing' : 'grab',
+                    cursor: dragging ? 'grabbing' : spotMode ? 'crosshair' : 'grab',
+                    opacity: fitted ? 1 : 0,
+                  }}
+                />
+                <canvas
+                  ref={overlayRef}
+                  aria-hidden="true"
+                  className="pointer-events-none absolute left-0 top-0 origin-top-left select-none"
+                  style={{
+                    transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
                     opacity: fitted ? 1 : 0,
                   }}
                 />
@@ -972,6 +1116,29 @@ export default function HalftoneStudio() {
                   display={`${params.contrast > 0 ? '+' : ''}${Math.round(params.contrast * 100)}`}
                   onChange={(v) => set('contrast', v)}
                 />
+                <SliderField
+                  label="Lights (highlights)"
+                  value={params.lights}
+                  min={-1}
+                  max={1}
+                  step={0.02}
+                  display={`${params.lights > 0 ? '+' : ''}${Math.round(params.lights * 100)}`}
+                  onChange={(v) => set('lights', v)}
+                />
+                <SliderField
+                  label="Darks (shadows)"
+                  value={params.darks}
+                  min={-1}
+                  max={1}
+                  step={0.02}
+                  display={`${params.darks > 0 ? '+' : ''}${Math.round(params.darks * 100)}`}
+                  onChange={(v) => set('darks', v)}
+                />
+                <p className="text-xs leading-relaxed text-zinc-500">
+                  Split-tone levels, adjusted independently: Lights − pulls blown
+                  areas back into dots (save a bright face), Darks + opens shadows
+                  that plugged into solid ink.
+                </p>
                 <Button
                   variant="ghost"
                   size="sm"
@@ -980,6 +1147,66 @@ export default function HalftoneStudio() {
                 >
                   <RotateCcw className="h-4 w-4" /> Reset all settings
                 </Button>
+              </Section>
+
+              {/* target area — local dodge & burn before screening */}
+              <Section title="Target area">
+                <Button
+                  size="sm"
+                  variant={spotMode ? 'default' : 'outline'}
+                  className={
+                    spotMode
+                      ? 'w-full bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                      : 'w-full border-zinc-700 hover:bg-zinc-800'
+                  }
+                  onClick={toggleSpotMode}
+                >
+                  <Crosshair className="h-4 w-4" />
+                  {spotMode ? 'Done editing region' : 'Edit target region'}
+                </Button>
+                {spotMode ? (
+                  <>
+                    <p className="text-xs leading-relaxed text-zinc-500">
+                      Drag on the image to place a new region · drag inside it to
+                      move · drag its amber edge handle to resize. The exposure
+                      fades out at the edge so the fix blends in.
+                    </p>
+                    <SliderField
+                      label="Area exposure"
+                      value={params.spotExposure}
+                      min={-1}
+                      max={1}
+                      step={0.02}
+                      display={`${params.spotExposure > 0 ? '+' : ''}${Math.round(params.spotExposure * 100)}`}
+                      onChange={(v) => set('spotExposure', v)}
+                    />
+                    <SliderField
+                      label="Area size"
+                      value={params.spotR}
+                      min={0.05}
+                      max={0.6}
+                      step={0.01}
+                      display={`${Math.round(params.spotR * 100)}%`}
+                      onChange={(v) => set('spotR', v)}
+                    />
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="w-full text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                      onClick={() => {
+                        set('spotEnabled', false)
+                        set('spotExposure', 0)
+                      }}
+                    >
+                      <RotateCcw className="h-4 w-4" /> Remove region
+                    </Button>
+                  </>
+                ) : (
+                  <p className="text-xs leading-relaxed text-zinc-500">
+                    Brighten or darken one spot of the photo — e.g. lift a face
+                    out of shadow — while the rest of the screen stays untouched.
+                  </p>
+                )}
               </Section>
           </div>
         </aside>
