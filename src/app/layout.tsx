@@ -14,24 +14,24 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Z.ai Code Scaffold - AI-Powered Development",
-  description: "Modern Next.js scaffold optimized for AI-powered development with Z.ai. Built with TypeScript, Tailwind CSS, and shadcn/ui.",
-  keywords: ["Z.ai", "Next.js", "TypeScript", "Tailwind CSS", "shadcn/ui", "AI development", "React"],
-  authors: [{ name: "Z.ai Team" }],
+  title: "Halftone Studio",
+  description:
+    "Browser-based halftone screen room: dots, lines, diamonds and CMYK separations with Photoshop-style Frequency (LPI) and Angle controls. Continuous tone in, print-ready 1-bit dots out.",
+  keywords: ["halftone", "screen printing", "CMYK separation", "LPI", "halftone dots", "Next.js", "Canvas"],
+  authors: [{ name: "mpem1" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/logo.svg",
   },
   openGraph: {
-    title: "Z.ai Code Scaffold",
-    description: "AI-powered development with modern React stack",
-    url: "https://chat.z.ai",
-    siteName: "Z.ai",
+    title: "Halftone Studio",
+    description: "Print-ready halftones, screened entirely in your browser",
+    siteName: "Halftone Studio",
     type: "website",
   },
   twitter: {
-    card: "summary_large_image",
-    title: "Z.ai Code Scaffold",
-    description: "AI-powered development with modern React stack",
+    card: "summary",
+    title: "Halftone Studio",
+    description: "Print-ready halftones, screened entirely in your browser",
   },
 };
 
