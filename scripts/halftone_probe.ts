@@ -11,6 +11,7 @@ import {
   DEFAULT_PARAMS,
   type HalftoneParams,
 } from '../src/lib/halftone.ts'
+import { buildHalftoneSVG } from '../src/lib/halftoneSvg.ts'
 
 const SRC = '/home/z/my-project/public/sample.jpg'
 const OUT = '/home/z/my-project/scripts/probe-out'
@@ -119,4 +120,84 @@ for (const s of scenarios) {
   await crop8x(file, s.tag, (clone.width * 0.5) | 0, (clone.height * 0.45) | 0)
   console.log(`  wrote ${file} + crop8x-${s.tag}.png (ss=${ss}, crisp=${crisp}, cell=${p.cell})`)
 }
+
+/* ------------------------------------------------------------------ */
+/* SVG vector export parity: synthetic tones with known answers        */
+/* ------------------------------------------------------------------ */
+
+async function svgScenario(tag: string, p: Partial<HalftoneParams>) {
+  const pp: HalftoneParams = { ...DEFAULT_PARAMS, ...p }
+  const cw = 400
+  const ch = 300
+  // left half = 50% gray (ink 0.5), right half = 25% gray (ink 0.75)
+  const data = new Uint8ClampedArray(cw * ch * 4)
+  for (let y = 0; y < ch; y++) {
+    for (let x = 0; x < cw; x++) {
+      const v = (x < cw / 2 ? 0.5 : 0.75) * 255
+      const j = (y * cw + x) * 4
+      data[j] = v
+      data[j + 1] = v
+      data[j + 2] = v
+      data[j + 3] = 255
+    }
+  }
+  const img2 = { data, width: cw, height: ch }
+  adjustImageData(img2 as unknown as ImageData, pp)
+
+  const n = cw * ch
+  const ink = new Float32Array(n)
+  for (let i = 0, j = 0; i < n; i++, j += 4) {
+    const lum = (0.299 * data[j] + 0.587 * data[j + 1] + 0.114 * data[j + 2]) / 255
+    ink[i] = 1 - lum
+  }
+  const theta = (pp.angleDeg * Math.PI) / 180
+  const cov = screenCoverage(ink, cw, ch, theta, pp.cell, pp.dotScale, pp.shape, true, 1)
+  let sum = 0
+  for (let i = 0; i < n; i++) sum += cov[i]
+  const rasterMean = sum / n
+
+  const svg = buildHalftoneSVG({
+    w: cw,
+    h: ch,
+    cell: pp.cell,
+    params: pp,
+    plates: [{ ink, theta, fill: '#000000' }],
+  })
+  const circles = (svg.match(/<circle/g) || []).length
+  const rects = (svg.match(/<rect/g) || []).length
+  const polys = (svg.match(/<polygon/g) || []).length
+  const ellipses = (svg.match(/<ellipse/g) || []).length
+  await sharp(Buffer.from(svg)).toFile(`${OUT}/vec-${tag}.png`)
+  // rasterize the vector at 3x and measure ink fraction (lum < 0.5)
+  const { data: buf, info } = await sharp(Buffer.from(svg), { density: 216 })
+    .resize(cw * 3, ch * 3)
+    .greyscale()
+    .raw()
+    .toBuffer({ resolveWithObject: true })
+  let dark = 0
+  for (let i = 0; i < buf.length; i++) if (buf[i] < 128) dark++
+  const svgMean = dark / buf.length
+  const delta = Math.abs(svgMean - rasterMean)
+  console.log(
+    `  [svg:${tag}] marks: ${circles} circles, ${rects} rects, ${polys} polys, ${ellipses} ellipses`,
+  )
+  console.log(
+    `  [svg:${tag}] raster coverage=${(rasterMean * 100).toFixed(2)}%  vector ink=${(svgMean * 100).toFixed(2)}%  delta=${(delta * 100).toFixed(2)}% ${delta < 0.02 ? 'PASS' : 'FAIL'}`,
+  )
+  // zoomed crop of the vector raster for eyeballing dot roundness
+  await sharp(`${OUT}/vec-${tag}.png`)
+    .extract({ left: 20, top: 20, width: 110, height: 110 })
+    .resize(880, 880, { kernel: 'nearest' })
+    .toFile(`${OUT}/vec-crop8x-${tag}.png`)
+  await sharp(Buffer.from(svg)).toFile(`${OUT}/vec-${tag}.svg`)
+  void info
+}
+
+console.log('\nSVG vector parity (synthetic 50% / 25% ink halves):')
+await svgScenario('dot', { tone: 'bw' })
+await svgScenario('square', { tone: 'bw', shape: 'square' })
+await svgScenario('diamond', { tone: 'bw', shape: 'diamond' })
+await svgScenario('ellipse', { tone: 'bw', shape: 'ellipse' })
+await svgScenario('line', { tone: 'bw', shape: 'line' })
+await svgScenario('wave', { tone: 'bw', shape: 'wave' })
 console.log('done')

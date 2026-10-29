@@ -27,6 +27,7 @@ import {
   type ScreenShape,
   type ToneMode,
 } from '@/lib/halftone'
+import { renderHalftoneSVG } from '@/lib/halftoneSvg'
 
 const MAX_WORK = 1800 // working resolution cap (long edge)
 const MAX_EXPORT = 2600 // export resolution cap
@@ -310,6 +311,41 @@ export default function HalftoneStudio() {
     }
   }, [params])
 
+  /** Vector twin of exportPng: same ruling math (cellScale = w/workW),
+   *  but the marks leave as true SVG geometry — circles stay circles at
+   *  any print resolution. */
+  const exportSvg = useCallback(async () => {
+    if (!origRef.current) return
+    setExporting(true)
+    await new Promise((r) => setTimeout(r, 30))
+    try {
+      const img = origRef.current
+      const scale = Math.min(1, MAX_EXPORT / Math.max(img.naturalWidth, img.naturalHeight))
+      const w = Math.round(img.naturalWidth * scale)
+      const h = Math.round(img.naturalHeight * scale)
+      const big = document.createElement('canvas')
+      big.width = w
+      big.height = h
+      const bctx = big.getContext('2d')!
+      bctx.imageSmoothingQuality = 'high'
+      bctx.drawImage(img, 0, 0, w, h)
+      const workMax = params.mode === 'cmyk' ? 1400 : MAX_WORK
+      const workScale = Math.min(1, workMax / Math.max(img.naturalWidth, img.naturalHeight))
+      const workW = Math.max(2, Math.round(img.naturalWidth * workScale))
+      const svg = renderHalftoneSVG(big, params, w / workW)
+      const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
+      const a = document.createElement('a')
+      a.href = URL.createObjectURL(blob)
+      a.download = `halftone-${params.mode}-${params.shape}${
+        params.transparent ? '-transparent' : ''
+      }.svg`
+      a.click()
+      URL.revokeObjectURL(a.href)
+    } finally {
+      setExporting(false)
+    }
+  }, [params])
+
   // --- stage pointer handling: drag to pan, pinch to zoom ---
   const onStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if ((e.target as HTMLElement).closest('[data-no-pan]')) return
@@ -523,6 +559,15 @@ export default function HalftoneStudio() {
                     onClick={() => fileRef.current?.click()}
                   >
                     <Upload className="h-4 w-4" /> Upload
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="border-zinc-700 hover:bg-zinc-800"
+                    onClick={exportSvg}
+                    disabled={exporting || !ready}
+                  >
+                    <Download className="h-4 w-4" /> SVG
                   </Button>
                   <Button
                     size="sm"

@@ -17,10 +17,16 @@
  *      sampling it over a cell and sorting gives the exact threshold for any
  *      tone, so a 37% gray inks exactly 37% of every cell — dot area is
  *      proportional to tone, the property that makes halftones print right.
- *   4. The round-dot spot is the classic cosine screen
- *      (cos 2πu + cos 2πv)/2: dots grow round, meet at 50% as a checkerboard,
- *      then invert into round paper holes — no overlapping-clip artifacts.
- *      Square / diamond / ellipse spots morph the same way via their ranks.
+ *   4. The round-dot spot is the EUCLIDEAN circle screen
+ *      g = 1 - √2·dist: dots are geometrically perfect circles from 0%
+ *      up to ~78.5% tone (where neighboring circles physically touch),
+ *      then the screen inverts into round paper holes — Photoshop's
+ *      "Round" halftone screen. Rank calibration keeps dot area
+ *      exactly == tone (the photocraft quantize.rs property), and the
+ *      contour stays a true circle at every tone, so the SVG vector
+ *      exporter can emit literal <circle> elements with identical
+ *      geometry. Square / diamond / ellipse spots are conic as well and
+ *      morph the same way via their ranks.
  *   5. Anti-aliasing is k×k supersampling of the 1-bit threshold (3×3 single,
  *      2×2 CMYK); "crisp" mode skips it for true 1-bit output like
  *      Photoshop's Bitmap → Halftone Screen. Line-like screens (lines /
@@ -96,15 +102,16 @@ export const SHAPE_LABELS: Record<ScreenShape, string> = {
   zigzag: 'Zigzags',
 }
 
-/** CMYK plate definitions: ink rgb (0..1) + screen angle offset. */
-const PLATES = {
+/** CMYK plate definitions: ink rgb (0..1) + screen angle offset.
+ *  Exported so the SVG exporter builds the exact same separations. */
+export const PLATES = {
   C: { rgb: [0, 1, 1], offset: 15, channel: 0 },
   M: { rgb: [1, 0, 1], offset: 75, channel: 1 },
   Y: { rgb: [1, 1, 0], offset: 0, channel: 2 },
   K: { rgb: [0, 0, 0], offset: 45, channel: -1 },
 } as const
 
-type PlateName = keyof typeof PLATES
+export type PlateName = keyof typeof PLATES
 
 function hexToRgb01(hex: string): [number, number, number] {
   const m = /^#?([0-9a-f]{6})$/i.exec(hex)
@@ -158,13 +165,6 @@ export function adjustImageData(img: ImageData, p: HalftoneParams): void {
 /* Screening core                                                      */
 /* ------------------------------------------------------------------ */
 
-/** cos(2π·i/4096) LUT — the round-dot spot needs two per sample. */
-const COS = (() => {
-  const t = new Float32Array(4096)
-  for (let i = 0; i < 4096; i++) t[i] = Math.cos((2 * Math.PI * i) / 4096)
-  return t
-})()
-
 /** Spot value g(u01, v01) in [0..1]-ish: 1 at the cell center (first ink),
  *  falling to ≤0 at the last inked contour. u01/v01 ∈ [0,1).
  *  sx = absolute screen x in px (wave phase), cell = pitch in px. */
@@ -177,11 +177,14 @@ function spotValue(
 ): number {
   switch (shape) {
     case 'dot': {
-      // classic cosine round screen: grows round, checkerboard at 50%,
-      // inverts to round paper holes — photocraft's HalftonePattern dot
-      const c1 = COS[(u01 * 4096) & 4095]
-      const c2 = COS[(v01 * 4096) & 4095]
-      return (2 - c1 - c2) * 0.25
+      // Euclidean circle screen (Photoshop "Round"): contour is a true
+      // circle of radius (1-g)/√2 in cell units — dots stay perfect
+      // circles until they touch at ~78.5% tone, then invert into round
+      // paper holes. Max distance across the cell is √(½)·√2 = 1, so the
+      // spot spans exactly [0..1] and rank-calibrates cleanly.
+      const dx = u01 - 0.5
+      const dy = v01 - 0.5
+      return 1 - Math.sqrt(dx * dx + dy * dy) * Math.SQRT2
     }
     case 'square': {
       const a = Math.abs(u01 * 2 - 1)
@@ -228,6 +231,14 @@ function getSpotTable(shape: ScreenShape): Float32Array {
 
 const isLineLike = (shape: ScreenShape) =>
   shape === 'line' || shape === 'wave' || shape === 'zigzag'
+
+/** Rank-calibrated threshold for tone t (0..1): the spot value whose
+ *  contour leaves exactly t of every cell inked. Shared by the raster
+ *  screener AND the SVG exporter so both produce identical geometry. */
+export function spotThreshold(shape: ScreenShape, t: number): number {
+  const table = getSpotTable(shape)
+  return table[Math.min(table.length - 1, ((1 - t) * (table.length - 1)) | 0)]
+}
 
 /** Two box-blur passes ≈ gaussian. Keeps per-pixel screening from aliasing
  *  image detail finer than the screen pitch (photocraft blurs lum by
@@ -370,7 +381,7 @@ export function screenCoverage(
 
 /** Mask: 0 where source pixel matches the knockout color, 1 elsewhere.
  *  Soft ramp between tol and tol*1.25 so boundaries fade rather than jag. */
-function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
+export function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
   const kc = hexToRgb01(p.knockoutColor)
   const lo = p.knockoutTolerance
   const hi = lo * 1.25 + 0.02
@@ -424,11 +435,19 @@ export function renderHalftone(
   const theta = (p.angleDeg * Math.PI) / 180
   const cell = Math.max(2, p.cell * cellScale)
   const n = w * h
-  // B&W is a bitmap mode: like Photoshop's Bitmap → Halftone Screen the
-  // output is strictly 1-bit, so marks are always rendered hard-edged.
+  // AA quality: k×k supersampling of the 1-bit threshold. Small cells get
+  // extra samples so tiny dots keep their circular silhouette instead of
+  // collapsing into pixel squares (4×4 single / 3×3 CMYK at cell < 8).
   const crisp = p.crisp || p.tone === 'bw'
-  // AA quality: 3×3 for single plate, 2×2 for the 4-plate CMYK workload
-  const ss = crisp ? 1 : p.mode === 'cmyk' ? 2 : 3
+  const ss = crisp
+    ? 1
+    : p.mode === 'cmyk'
+      ? cell < 8
+        ? 3
+        : 2
+      : cell < 8
+        ? 4
+        : 3
 
   if (p.mode === 'single') {
     // ink map from adjusted luminance (+ background knockout)
