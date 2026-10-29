@@ -165,16 +165,25 @@ function plateMarks(
   // line-like: one polygon strip per screen row; thickness follows the ink
   const mMin = Math.ceil((-ryMax - half) / cell)
   const mMax = Math.floor((ryMax + half) / cell)
-  const step = cell / 3
+  // waves are curved → sample finer; lines/zigzags are straight between
+  // corners → cell/3 is plenty
+  const step = shape === 'wave' ? cell / 6 : cell / 3
   const span = rxMax * 2 + cell
-  const count = Math.max(2, Math.ceil(span / step))
+  const x0 = -rxMax - cell / 2
+  const x1 = x0 + span
+  // zigzag triangle corners sit exactly at rx = k·cell: snap the sample grid
+  // onto them so peaks are NEVER truncated between samples (cell/3 divides
+  // cell, so a step-aligned grid always contains every corner)
+  const zs = shape === 'zigzag' ? Math.ceil(x0 / step) * step : x0
+  const ze = shape === 'zigzag' ? Math.floor(x1 / step) * step : x1
+  const count = Math.max(2, Math.ceil((ze - zs) / step))
   for (let m = mMin; m <= mMax; m++) {
     const ry = m * cell
     const top: string[] = []
     const bot: string[] = []
     let any = false
     for (let i = 0; i <= count; i++) {
-      const rx = -rxMax - cell / 2 + i * step
+      const rx = zs + i * step
       const off = lineOffset(shape, rx, cell)
       const yc = ry + off
       const ix = ca * rx + sa * yc + w / 2 - 0.5
