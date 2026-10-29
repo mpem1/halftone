@@ -7,7 +7,15 @@ import { Switch } from '@/components/ui/switch'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Download, RotateCcw, Upload, Image as ImageIcon } from 'lucide-react'
+import {
+  Download,
+  RotateCcw,
+  Upload,
+  Image as ImageIcon,
+  ZoomIn,
+  ZoomOut,
+  Maximize,
+} from 'lucide-react'
 import {
   DEFAULT_PARAMS,
   PLATE_ANGLES,
@@ -48,6 +56,9 @@ function ShapeGlyph({ shape }: { shape: ScreenShape }) {
 const SHAPES: ScreenShape[] = ['dot', 'square', 'diamond', 'ellipse', 'line']
 const PLATES: PlateFilter[] = ['all', 'C', 'M', 'Y', 'K']
 
+const clampZ = (z: number) => Math.min(16, Math.max(0.02, z))
+type ViewState = { z: number; x: number; y: number }
+
 function Section({
   title,
   children,
@@ -80,6 +91,99 @@ export default function HalftoneStudio() {
   const fileRef = useRef<HTMLInputElement | null>(null)
   const rafRef = useRef(0)
 
+  // --- zoom / pan viewport ---
+  const stageRef = useRef<HTMLDivElement | null>(null)
+  const [view, setView] = useState<ViewState>({ z: 1, x: 0, y: 0 })
+  const viewStateRef = useRef<ViewState>({ z: 1, x: 0, y: 0 })
+  const [dragging, setDragging] = useState(false)
+  const [fitted, setFitted] = useState(false)
+  const fitPendingRef = useRef(true)
+  const fitZRef = useRef(1)
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>())
+  const pinchRef = useRef<{
+    dist: number
+    z: number
+    mx: number
+    my: number
+    px: number
+    py: number
+  } | null>(null)
+
+  const applyView = useCallback((v: ViewState) => {
+    viewStateRef.current = v
+    setView(v)
+  }, [])
+
+  /** fit canvas inside the stage, centered */
+  const fitView = useCallback(() => {
+    const stage = stageRef.current
+    const cv = viewRef.current
+    if (!stage || !cv || !cv.width || !cv.height) return
+    const z = Math.min(
+      (stage.clientWidth / cv.width) * 0.96,
+      (stage.clientHeight / cv.height) * 0.96,
+    )
+    const zz = clampZ(z)
+    fitZRef.current = zz
+    setFitted(true)
+    applyView({
+      z: zz,
+      x: (stage.clientWidth - cv.width * zz) / 2,
+      y: (stage.clientHeight - cv.height * zz) / 2,
+    })
+  }, [applyView])
+
+  /** zoom by factor anchored at a client point */
+  const zoomAt = useCallback(
+    (clientX: number, clientY: number, factor: number) => {
+      const stage = stageRef.current
+      if (!stage) return
+      const rect = stage.getBoundingClientRect()
+      const sx = clientX - rect.left
+      const sy = clientY - rect.top
+      const { z, x, y } = viewStateRef.current
+      const nz = clampZ(z * factor)
+      if (nz === z) return
+      applyView({ z: nz, x: sx - ((sx - x) * nz) / z, y: sy - ((sy - y) * nz) / z })
+    },
+    [applyView],
+  )
+
+  /** zoom to an absolute scale anchored at stage center */
+  const zoomTo = useCallback(
+    (target: number) => {
+      const stage = stageRef.current
+      if (!stage) return
+      const sx = stage.clientWidth / 2
+      const sy = stage.clientHeight / 2
+      const { z, x, y } = viewStateRef.current
+      const nz = clampZ(target)
+      applyView({ z: nz, x: sx - ((sx - x) * nz) / z, y: sy - ((sy - y) * nz) / z })
+    },
+    [applyView],
+  )
+
+  // non-passive wheel zoom over the stage
+  useEffect(() => {
+    const stage = stageRef.current
+    if (!stage) return
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault()
+      zoomAt(e.clientX, e.clientY, Math.exp(-e.deltaY * 0.0016))
+    }
+    stage.addEventListener('wheel', onWheel, { passive: false })
+    return () => stage.removeEventListener('wheel', onWheel)
+  }, [zoomAt])
+
+  // refit on window resize when currently at fit scale
+  useEffect(() => {
+    const onResize = () => {
+      if (Math.abs(viewStateRef.current.z - fitZRef.current) < 1e-6) fitView()
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [fitView])
+
   /** load an image (url or object) into the working canvas */
   const loadSource = useCallback((img: HTMLImageElement, name: string) => {
     const scale = Math.min(1, MAX_WORK / Math.max(img.naturalWidth, img.naturalHeight))
@@ -93,6 +197,7 @@ export default function HalftoneStudio() {
     ctx.drawImage(img, 0, 0, w, h)
     srcRef.current = c
     origRef.current = img
+    fitPendingRef.current = true
     setFileName(name)
     setReady(true)
   }, [])
@@ -116,9 +221,13 @@ export default function HalftoneStudio() {
         params.mode === 'cmyk' ? 1400 : undefined,
       )
       setRenderMs(Math.round(ms))
+      if (fitPendingRef.current) {
+        fitPendingRef.current = false
+        fitView()
+      }
     })
     return () => cancelAnimationFrame(rafRef.current)
-  }, [params, ready])
+  }, [params, ready, fitView])
 
   const onFile = useCallback(
     (f: File | undefined) => {
@@ -166,8 +275,77 @@ export default function HalftoneStudio() {
     }
   }, [params])
 
+  // --- stage pointer handling: drag to pan, pinch to zoom ---
+  const onStagePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('[data-no-pan]')) return
+    const stage = stageRef.current
+    if (!stage) return
+    stage.setPointerCapture(e.pointerId)
+    pointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY })
+    setDragging(true)
+    if (pointersRef.current.size === 2) {
+      const [a, b] = [...pointersRef.current.values()]
+      const { z, x, y } = viewStateRef.current
+      pinchRef.current = {
+        dist: Math.hypot(a.x - b.x, a.y - b.y),
+        z,
+        mx: (a.x + b.x) / 2,
+        my: (a.y + b.y) / 2,
+        px: x,
+        py: y,
+      }
+    }
+  }
+
+  const onStagePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const pts = pointersRef.current
+    const prev = pts.get(e.pointerId)
+    if (!prev) return
+    const cur = { x: e.clientX, y: e.clientY }
+    pts.set(e.pointerId, cur)
+    if (pts.size >= 2 && pinchRef.current) {
+      const [a, b] = [...pts.values()]
+      const pin = pinchRef.current
+      const dist = Math.hypot(a.x - b.x, a.y - b.y)
+      if (pin.dist > 4 && dist > 4) {
+        const nz = clampZ(pin.z * (dist / pin.dist))
+        const mx = (a.x + b.x) / 2
+        const my = (a.y + b.y) / 2
+        applyView({
+          z: nz,
+          x: mx - ((pin.mx - pin.px) / pin.z) * nz,
+          y: my - ((pin.my - pin.py) / pin.z) * nz,
+        })
+      }
+    } else if (pts.size === 1) {
+      const v = viewStateRef.current
+      applyView({ ...v, x: v.x + (cur.x - prev.x), y: v.y + (cur.y - prev.y) })
+    }
+  }
+
+  const onStagePointerEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    pointersRef.current.delete(e.pointerId)
+    if (pointersRef.current.size < 2) pinchRef.current = null
+    if (pointersRef.current.size === 0) setDragging(false)
+  }
+
+  const onStageDoubleClick = (e: React.MouseEvent) => {
+    const { z } = viewStateRef.current
+    if (z > 1.05) fitView()
+    else zoomAt(e.clientX, e.clientY, 1 / z) // snap to 100% under cursor
+  }
+
   const set = <K extends keyof HalftoneParams>(k: K, v: HalftoneParams[K]) =>
     setParams((p) => ({ ...p, [k]: v }))
+
+  /** enabling art-in-marks benefits from a slightly larger screen pitch */
+  const enableKeepArt = (on: boolean) => {
+    if (on && params.cell < 8) {
+      setParams((p) => ({ ...p, keepArt: true, cell: 9 }))
+    } else {
+      set('keepArt', on)
+    }
+  }
 
   const plateAngles = PLATE_ANGLES(params.angleDeg)
   const isCmyk = params.mode === 'cmyk'
@@ -179,7 +357,7 @@ export default function HalftoneStudio() {
           <div className="flex items-baseline gap-3">
             <h1 className="text-lg font-semibold tracking-tight">Halftone Studio</h1>
             <p className="hidden text-xs text-zinc-500 sm:block">
-              dots · squares · diamonds · ellipses · lines — CMYK separation &amp; art-in-dot mode
+              dots · squares · diamonds · ellipses · lines — CMYK, art-in-marks &amp; zoomable preview
             </p>
           </div>
           <Badge variant="outline" className="border-zinc-700 font-mono text-xs text-zinc-400">
@@ -193,12 +371,80 @@ export default function HalftoneStudio() {
         <section className="min-w-0 flex-1" aria-label="Preview">
           <Card className="border-zinc-800 bg-zinc-900/60">
             <CardContent className="p-4">
-              <div className="bg-checker flex min-h-[320px] items-center justify-center overflow-hidden rounded-md lg:min-h-[540px]">
+              <div
+                ref={stageRef}
+                onPointerDown={onStagePointerDown}
+                onPointerMove={onStagePointerMove}
+                onPointerUp={onStagePointerEnd}
+                onPointerCancel={onStagePointerEnd}
+                onDoubleClick={onStageDoubleClick}
+                aria-label="Zoomable halftone preview"
+                className="bg-checker relative h-[62vh] min-h-[380px] touch-none overflow-hidden rounded-md border border-zinc-800 lg:h-[calc(100vh-240px)]"
+              >
                 <canvas
                   ref={viewRef}
                   aria-label="Halftone preview"
-                  className="max-h-[70vh] max-w-full object-contain shadow-2xl"
+                  className="absolute left-0 top-0 origin-top-left shadow-2xl select-none"
+                  style={{
+                    transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
+                    imageRendering: view.z >= 2 ? 'pixelated' : 'auto',
+                    cursor: dragging ? 'grabbing' : 'grab',
+                    opacity: fitted ? 1 : 0,
+                  }}
                 />
+                {/* zoom controls */}
+                <div
+                  data-no-pan
+                  className="absolute right-3 top-3 flex items-center gap-0.5 rounded-lg border border-zinc-700 bg-zinc-950/85 p-1 shadow-lg backdrop-blur"
+                >
+                  <button
+                    type="button"
+                    aria-label="Zoom out"
+                    onClick={() => zoomTo(viewStateRef.current.z / 1.5)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                  >
+                    <ZoomOut className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Zoom to 100 percent"
+                    onClick={() => zoomTo(1)}
+                    className="h-8 min-w-14 rounded-md px-1 text-center font-mono text-xs text-amber-400 hover:bg-zinc-800"
+                  >
+                    {Math.round(view.z * 100)}%
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Zoom in"
+                    onClick={() => zoomTo(viewStateRef.current.z * 1.5)}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                  >
+                    <ZoomIn className="h-4 w-4" />
+                  </button>
+                  <span className="mx-0.5 h-5 w-px bg-zinc-700" aria-hidden="true" />
+                  <button
+                    type="button"
+                    aria-label="Zoom to 100 percent"
+                    onClick={() => zoomTo(1)}
+                    className="flex h-8 items-center justify-center rounded-md px-2 font-mono text-[11px] text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                  >
+                    1:1
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Fit to view"
+                    onClick={fitView}
+                    className="flex h-8 w-8 items-center justify-center rounded-md text-zinc-300 hover:bg-zinc-800 hover:text-zinc-100"
+                  >
+                    <Maximize className="h-4 w-4" />
+                  </button>
+                </div>
+                <p
+                  data-no-pan
+                  className="absolute bottom-3 left-3 hidden rounded-md bg-zinc-950/75 px-2 py-1 text-[10px] text-zinc-500 sm:block"
+                >
+                  scroll to zoom · drag to pan · double-click = 100%
+                </p>
               </div>
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
                 <p className="flex items-center gap-2 text-xs text-zinc-500">
@@ -351,16 +597,45 @@ export default function HalftoneStudio() {
                   display={`${Math.round(params.dotScale * 100)}%`}
                   onChange={(v) => set('dotScale', v)}
                 />
-                {!isCmyk && (
-                  <>
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs text-zinc-300">Art in dots</Label>
-                      <Switch
-                        checked={params.keepArt}
-                        onCheckedChange={(v) => set('keepArt', v)}
-                        aria-label="Fill dots with original artwork colors"
-                      />
-                    </div>
+              </Section>
+
+              {/* mark fill — flat ink vs artwork-in-halftone */}
+              {!isCmyk && (
+                <Section title="Mark fill">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant={!params.keepArt ? 'default' : 'outline'}
+                      className={
+                        !params.keepArt
+                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                          : 'border-zinc-700 hover:bg-zinc-800'
+                      }
+                      onClick={() => enableKeepArt(false)}
+                    >
+                      Flat ink
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={params.keepArt ? 'default' : 'outline'}
+                      className={
+                        params.keepArt
+                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                          : 'border-zinc-700 hover:bg-zinc-800'
+                      }
+                      onClick={() => enableKeepArt(true)}
+                    >
+                      Art in marks
+                    </Button>
+                  </div>
+                  {params.keepArt ? (
+                    <p className="text-xs leading-relaxed text-zinc-500">
+                      The original artwork stays visible inside every halftone mark —
+                      paper shows between them. Zoom into the preview to see the art
+                      pixels inside the shapes. A larger cell size shows more art per
+                      mark.
+                    </p>
+                  ) : (
                     <div className="flex items-center justify-between">
                       <Label className="text-xs text-zinc-300">Ink color</Label>
                       <input
@@ -371,9 +646,9 @@ export default function HalftoneStudio() {
                         aria-label="Ink color"
                       />
                     </div>
-                  </>
-                )}
-              </Section>
+                  )}
+                </Section>
+              )}
 
               {/* adjustments */}
               <Section title="Image adjustments">
