@@ -18,7 +18,11 @@ from PIL import Image
 
 SRC = "/home/z/my-project/upload/Performer_wearing_metallic_leota\u2026_2a5360c8_2K.jpg"
 OUT_DIR = "/home/z/my-project/download"
-OUT_GIF = os.path.join(OUT_DIR, "performer_clouds_loop.gif")
+RETRO = True  # False -> original look
+OUT_GIF = os.path.join(
+    OUT_DIR,
+    "performer_clouds_loop_retro.gif" if RETRO else "performer_clouds_loop.gif",
+)
 PREVIEW = "/home/z/my-project/scripts/preview_frame.png"
 os.makedirs(OUT_DIR, exist_ok=True)
 
@@ -68,6 +72,31 @@ ys = np.linspace(0, 1, h, dtype=np.float32)[:, None]
 amp_y = 0.75 + 0.5 * ys
 
 field_base = (mask * amp_y).astype(np.float32)
+
+# ---------------- retro film grade (applied to source before warping) ----------------
+if RETRO:
+    def apply_retro(img_bgr):
+        x = img_bgr.astype(np.float32) / 255.0
+        # matte film curve: lift blacks, roll off whites
+        x = x * 0.90 + 0.075
+        # warm golden cast (BGR order: blue down, red up)
+        x[..., 0] *= 0.93
+        x[..., 2] *= 1.06
+        x = np.clip(x, 0, 1)
+        # gentle desaturation toward luminance
+        lum = (0.114 * x[..., 0] + 0.587 * x[..., 1] + 0.299 * x[..., 2])[..., None]
+        x = lum + (x - lum) * 0.82
+        # subtle vignette
+        yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+        r = np.sqrt(((xx - w / 2) / (0.62 * w)) ** 2 + ((yy - h / 2) / (0.62 * h)) ** 2)
+        vig = 1.0 - 0.16 * np.clip(r - 0.55, 0, 1) ** 1.6
+        x = np.clip(x * vig[..., None], 0, 1)
+        # fine film grain
+        rng = np.random.default_rng(7)
+        x = np.clip(x + rng.normal(0, 0.012, (h, w, 1)).astype(np.float32), 0, 1)
+        return (x * 255 + 0.5).astype(np.uint8)
+
+    img = apply_retro(img)
 
 # ---------------- render frames ----------------
 N_FRAMES = 72          # more frames + longer delay = slow AND smooth
