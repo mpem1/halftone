@@ -20,6 +20,14 @@
  * threshold is a fraction of the cell pitch, identical to the raster
  * screener's, so preview and vector agree at any resolution.
  *
+ * Spot screens (dot / square / diamond / ellipse) seal their near-solid
+ * cells with the SAME rule as the raster (SPOT_SEAL on cell-center ink +
+ * scaled tone): a sealed cell is emitted as the shape's OWN plane-closing
+ * contour — an oversized circle / rect / rhombus / ellipse overlapping its
+ * neighbours — never a foreign full-cell square, so a circles SVG contains
+ * circles at every tone and solid regions keep scalloped, not blocky,
+ * boundaries.
+ *
  * CMYK exports as four independently-angled plate groups composited with
  * multiply blending — the same rosette (or uniform) angles as the raster.
  * keepArt embeds the adjusted artwork and masks it through the vector
@@ -32,7 +40,9 @@ import {
   buildKnockoutMask,
   lineSeal,
   PLATES,
+  sampleMap,
   spotThreshold,
+  SPOT_SEAL,
   type HalftoneParams,
   type PlateName,
   type ScreenShape,
@@ -46,23 +56,6 @@ function n2(v: number): string {
   let s = v.toFixed(2).replace(/\.?0+$/, '')
   if (s === '-0') s = '0'
   return s
-}
-
-/** bilinear sample of a float map at fractional pixel coords (clamped) */
-function sample(map: Float32Array, w: number, h: number, x: number, y: number): number {
-  const cx = x < 0 ? 0 : x > w - 1 ? w - 1 : x
-  const cy = y < 0 ? 0 : y > h - 1 ? h - 1 : y
-  const x0 = cx | 0
-  const y0 = cy | 0
-  const x1 = x0 + 1 < w ? x0 + 1 : x0
-  const y1 = y0 + 1 < h ? y0 + 1 : y0
-  const fx = cx - x0
-  const fy = cy - y0
-  const a = map[y0 * w + x0]
-  const b = map[y0 * w + x1]
-  const c = map[y1 * w + x0]
-  const d = map[y1 * w + x1]
-  return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy
 }
 
 function rgb01ToHex(rgb: readonly [number, number, number] | readonly number[]): string {
@@ -123,15 +116,43 @@ function plateMarks(
         // screen -> image coords (inverse rotation), pixel-center convention
         const ix = ca * rx + sa * ry + w / 2 - 0.5
         const iy = -sa * rx + ca * ry + h / 2 - 0.5
-        const t0 = sample(ink, w, h, ix, iy)
+        const t0 = sampleMap(ink, w, h, ix, iy)
         if (t0 <= 0.004) continue
-        if (t0 >= 0.996) {
-          out.push(
-            `<rect x="${n2(rx - half)}" y="${n2(ry - half)}" width="${n2(cell)}" height="${n2(cell)}"/>`,
-          )
+        const tt = Math.min(1, t0 * ms * ms)
+        // near-solid seal — same rule as the raster screener. Emit the
+        // shape's OWN plane-closing contour (a few percent oversized so
+        // neighbours overlap and anti-aliasing can never leave corner
+        // pinholes) instead of a foreign full-cell square
+        if (tt >= SPOT_SEAL && t0 >= SPOT_SEAL) {
+          switch (shape) {
+            case 'dot':
+              // circles close the plane at r = cell/√2 (corner distance);
+              // +3% keeps the union seamless
+              out.push(
+                `<circle cx="${n2(rx)}" cy="${n2(ry)}" r="${n2((1.03 / Math.SQRT2) * cell)}"/>`,
+              )
+              break
+            case 'square':
+              out.push(
+                `<rect x="${n2(rx - cell * 0.51)}" y="${n2(ry - cell * 0.51)}" width="${n2(cell * 1.02)}" height="${n2(cell * 1.02)}"/>`,
+              )
+              break
+            case 'diamond':
+              // rhombus closes the plane at half-diagonals = cell
+              out.push(
+                `<polygon points="${n2(rx - 1.03 * cell)},${n2(ry)} ${n2(rx)},${n2(ry - 1.03 * cell)} ${n2(rx + 1.03 * cell)},${n2(ry)} ${n2(rx)},${n2(ry + 1.03 * cell)}"/>`,
+              )
+              break
+            case 'ellipse':
+              // this contour reaches the cell corner at g = √(1.242) ≈ 1.115;
+              // 1.15 leaves overlap margin
+              out.push(
+                `<ellipse cx="${n2(rx)}" cy="${n2(ry)}" rx="${n2(0.775 * 1.15 * cell)}" ry="${n2(0.55 * 1.15 * cell)}"/>`,
+              )
+              break
+          }
           continue
         }
-        const tt = Math.min(1, t0 * ms * ms)
         // rank-calibrated contour: identical geometry to the raster screen
         const s = spotThreshold(shape, tt)
         const g = 1 - s // contour scale factor in cell units
@@ -198,7 +219,7 @@ function plateMarks(
       const yc = ry + off
       const ix = ca * rx + sa * yc + w / 2 - 0.5
       const iy = -sa * rx + ca * yc + h / 2 - 0.5
-      const t0 = sample(ink, w, h, ix, iy)
+      const t0 = sampleMap(ink, w, h, ix, iy)
       hhMap[base + i] = Math.min(1, t0 * ms) * half
     }
   }

@@ -70,8 +70,15 @@ async function measureSvg(svg: string, w: number, h: number, tag: string) {
     if (mn > maxRowMin) maxRowMin = mn
   }
   const meanInk = sum / (info.width * info.height) / 255
+  const circles = (svg.match(/<circle/g) || []).length
+  const rects = (svg.match(/<rect/g) || []).length
+  const polys = (svg.match(/<polygon/g) || []).length
+  const ellipses = (svg.match(/<ellipse/g) || []).length
   console.log(
     `    svg : ink=${(meanInk * 100).toFixed(2)}%  rows-with-light-run=${lightRows}/${info.height}  lightest-row-min=${maxRowMin}`,
+  )
+  console.log(
+    `    marks: ${circles} circles, ${rects - 2} mark-rects (+2 structural), ${polys} polys, ${ellipses} ellipses`,
   )
   // 6x eyeball crop of the 3x raster
   const crop = Math.min(120, info.width, info.height)
@@ -84,13 +91,13 @@ async function measureSvg(svg: string, w: number, h: number, tag: string) {
 }
 
 async function run(tag: string, inkAmount: number, p: Partial<HalftoneParams>) {
-  const pp: HalftoneParams = { ...DEFAULT_PARAMS, ...p, shape: 'line' }
+  const pp: HalftoneParams = { ...DEFAULT_PARAMS, ...p, shape: p.shape ?? 'line' }
   const w = 300
   const h = 200
   const img = uniformTone(w, h, inkAmount)
   const ink = buildInk(img, pp)
   const theta = (pp.angleDeg * Math.PI) / 180
-  const cov = screenCoverage(ink, w, h, theta, pp.cell, pp.dotScale, 'line', pp.crisp, 1)
+  const cov = screenCoverage(ink, w, h, theta, pp.cell, pp.dotScale, pp.shape, pp.crisp, 1)
 
   let mean = 0
   let zeroRows = 0
@@ -151,5 +158,11 @@ await run('ink95-c10', 0.95, { tone: 'bw', cell: 10, angleDeg: 0 })
 await run('ink90-c10', 0.9, { tone: 'bw', cell: 10, angleDeg: 0 })
 await run('ink85-c10', 0.85, { tone: 'bw', cell: 10, angleDeg: 0 })
 await run('ink90-c10-ms13', 0.9, { tone: 'bw', cell: 10, angleDeg: 0, dotScale: 1.3 })
+
+console.log('--- dot screens: seal + no foreign squares in the svg ---')
+await run('dot-black-a45', 1.0, { tone: 'bw', shape: 'dot', cell: 10, angleDeg: 45 })
+await run('dot-ink95-a45', 0.95, { tone: 'bw', shape: 'dot', cell: 10, angleDeg: 45 })
+await run('dot-ink90-a45', 0.9, { tone: 'bw', shape: 'dot', cell: 10, angleDeg: 45 })
+await run('dot-ink85-a45', 0.85, { tone: 'bw', shape: 'dot', cell: 10, angleDeg: 45 })
 
 console.log('done')

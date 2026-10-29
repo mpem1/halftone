@@ -31,12 +31,17 @@
  *      2×2 CMYK); "crisp" mode skips it for true 1-bit output like
  *      Photoshop's Bitmap → Halftone Screen. Line-like screens (lines /
  *      waves / zigzags) use an exact 1px analytic edge band instead.
- *   6. Line-like bands SEAL into solid once the paper gap between
- *      neighbouring lines drops below lineSeal() (~10% of the pitch): a
- *      sub-pixel gap renders as a dirty hairline (phase-dependent dotted
- *      white rows in 1-bit output; permanent AA seams in the vector), not a
- *      tone. The SVG exporter applies the identical rule so preview and
- *      vector agree — dark areas read solid instead of striped.
+ *   6. Near-solid SEAL, shared by every shape and BOTH engines: line bands
+ *      merge once the paper gap drops below lineSeal() (~10% of the pitch);
+ *      spot cells (dot / square / diamond / ellipse) merge once their ink
+ *      passes SPOT_SEAL (90% — same "less than 10% paper" semantics). A
+ *      sub-pixel gap renders as a dirty hairline / phase-dependent speckle
+ *      in 1-bit output, leaves permanent AA pinholes in the vector, and
+ *      prints as errors (ink gain closes hairlines unevenly) — so dark
+ *      areas close to clean solid instead. The SVG exporter emits the
+ *      shape's OWN plane-closing contour for sealed cells (an oversized
+ *      circle overlapping its neighbours), never a foreign square, so a
+ *      circles SVG contains circles at every tone.
  *   7. Composite flat ink or the source artwork itself ("keep art") per
  *      image pixel. CMYK mode renders 4 independently-angled plates and
  *      multiply-composites them.
@@ -307,6 +312,40 @@ function getSpotTable(shape: ScreenShape): Float32Array {
   return t
 }
 
+/** bilinear sample of a float map at fractional pixel coords (clamped).
+ *  Shared by the raster screener's cell seal and the SVG exporter so both
+ *  read the ink map identically. */
+export function sampleMap(
+  map: Float32Array,
+  w: number,
+  h: number,
+  x: number,
+  y: number,
+): number {
+  const cx = x < 0 ? 0 : x > w - 1 ? w - 1 : x
+  const cy = y < 0 ? 0 : y > h - 1 ? h - 1 : y
+  const x0 = cx | 0
+  const y0 = cy | 0
+  const x1 = x0 + 1 < w ? x0 + 1 : x0
+  const y1 = y0 + 1 < h ? y0 + 1 : y0
+  const fx = cx - x0
+  const fy = cy - y0
+  const a = map[y0 * w + x0]
+  const b = map[y0 * w + x1]
+  const c = map[y1 * w + x0]
+  const d = map[y1 * w + x1]
+  return (a + (b - a) * fx) * (1 - fy) + (c + (d - c) * fx) * fy
+}
+
+/** Near-solid seal for the spot shapes (dot / square / diamond / ellipse):
+ *  a cell whose ink AND scaled tone both reach this merges into solid —
+ *  the identical rule lives in the SVG exporter. Below ~10% paper the
+ *  leftover white is winding hairline channels between almost-merged dots:
+ *  they render as phase-dependent speckle in 1-bit output, leave AA
+ *  pinholes in the vector, and print as errors (ink gain closes them
+ *  unevenly) — dark areas close to clean solid instead. */
+export const SPOT_SEAL = 0.9
+
 const isLineLike = (shape: ScreenShape) =>
   shape === 'line' || shape === 'wave' || shape === 'zigzag'
 
@@ -449,7 +488,21 @@ export function screenCoverage(
         continue
       }
 
-      // spot shapes: threshold = rank-calibrated spot value for this tone
+      // spot shapes: near-solid cells SEAL into solid (same rule as the SVG
+      // exporter). The CELL's center ink decides — not this pixel's — so
+      // raster and vector seal the exact same set of cells
+      if (tt >= SPOT_SEAL) {
+        const kx = Math.round(rx / cell)
+        const ky = Math.round(ry / cell)
+        const ix = ca * (kx * cell) + sa * (ky * cell) + w / 2 - 0.5
+        const iy = -sa * (kx * cell) + ca * (ky * cell) + h / 2 - 0.5
+        if (sampleMap(ink, w, h, ix, iy) >= SPOT_SEAL) {
+          out[row + x] = 1
+          continue
+        }
+      }
+
+      // threshold = rank-calibrated spot value for this tone
       const sStar = table![((1 - tt) * (nTab - 1)) | 0]
       if (ss <= 1 || crisp) {
         const u01 = (rx + half) / cell
