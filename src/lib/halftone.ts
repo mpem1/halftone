@@ -22,7 +22,7 @@ export type PlateFilter = 'all' | 'C' | 'M' | 'Y' | 'K'
 export interface HalftoneParams {
   mode: OutputMode
   shape: ScreenShape
-  angleDeg: number // 0..90 base screen angle
+  angleDeg: number // 0..180 base screen angle
   cell: number // screen pitch in px (3..24)
   dotScale: number // 0.2..1.2 mark size factor
   keepArt: boolean // fill marks with source artwork color (single mode)

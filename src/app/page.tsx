@@ -338,14 +338,8 @@ export default function HalftoneStudio() {
   const set = <K extends keyof HalftoneParams>(k: K, v: HalftoneParams[K]) =>
     setParams((p) => ({ ...p, [k]: v }))
 
-  /** enabling art-in-marks benefits from a slightly larger screen pitch */
-  const enableKeepArt = (on: boolean) => {
-    if (on && params.cell < 8) {
-      setParams((p) => ({ ...p, keepArt: true, cell: 9 }))
-    } else {
-      set('keepArt', on)
-    }
-  }
+  /** enabling art-in-marks must never touch the user's screen parameters */
+  const enableKeepArt = (on: boolean) => set('keepArt', on)
 
   const plateAngles = PLATE_ANGLES(params.angleDeg)
   const isCmyk = params.mode === 'cmyk'
@@ -574,7 +568,7 @@ export default function HalftoneStudio() {
                   label="Orientation"
                   value={params.angleDeg}
                   min={0}
-                  max={90}
+                  max={180}
                   step={1}
                   display={`${params.angleDeg}°`}
                   onChange={(v) => set('angleDeg', v)}
