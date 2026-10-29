@@ -71,8 +71,8 @@ field_base = (mask * amp_y).astype(np.float32)
 
 # ---------------- render frames ----------------
 N_FRAMES = 36
-A = 11.0   # horizontal drift amplitude (px)
-B = 3.5    # vertical drift amplitude (px)
+A = 14.0   # horizontal drift amplitude (px)
+B = 0.0    # pure horizontal motion (no vertical bob)
 
 base_x = np.tile(np.arange(w, dtype=np.float32), (h, 1))
 base_y = np.tile(np.arange(h, dtype=np.float32)[:, None], (1, w))
@@ -81,9 +81,8 @@ frames = []
 for i in range(N_FRAMES):
     ph = 2 * np.pi * i / N_FRAMES
     dx = A * np.sin(ph)
-    dy = B * np.sin(ph + 0.9)
     map_x = (base_x - field_base * dx).astype(np.float32)
-    map_y = (base_y - field_base * dy).astype(np.float32)
+    map_y = base_y  # no vertical motion
     frame = cv2.remap(img, map_x, map_y, cv2.INTER_LINEAR,
                       borderMode=cv2.BORDER_REFLECT)
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
