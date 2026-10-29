@@ -107,6 +107,10 @@ export default function HalftoneStudio() {
   const [renderMs, setRenderMs] = useState(0)
   const [exporting, setExporting] = useState(false)
   const [ready, setReady] = useState(false)
+  // print ruling (Photoshop Bitmap → Halftone Screen semantics):
+  // output resolution in ppi × screen frequency in lpi → cell pitch
+  const [dpi, setDpi] = useState(300)
+  const [lpi, setLpi] = useState(45)
 
   const srcRef = useRef<HTMLCanvasElement | null>(null)
   const viewRef = useRef<HTMLCanvasElement | null>(null)
@@ -369,11 +373,38 @@ export default function HalftoneStudio() {
   const set = <K extends keyof HalftoneParams>(k: K, v: HalftoneParams[K]) =>
     setParams((p) => ({ ...p, [k]: v }))
 
+  /** Convert a print ruling (ppi × lpi) into the preview cell pitch, exactly
+   *  like Photoshop's Bitmap → Halftone Screen: cell at the EXPORT equals
+   *  dpi/lpi px; the preview cell scales by workW/exportW so the exported
+   *  file keeps that ruling (renderHalftone's cellScale does the reverse). */
+  const applyRuling = useCallback(
+    (ppi: number, freq: number) => {
+      const img = origRef.current
+      const natMax = img ? Math.max(img.naturalWidth, img.naturalHeight) : 0
+      const workMax = params.mode === 'cmyk' ? 1400 : MAX_WORK
+      const workW = natMax ? natMax * Math.min(1, workMax / natMax) : 1800
+      const expW = natMax ? natMax * Math.min(1, MAX_EXPORT / natMax) : 2600
+      const cellExport = ppi / freq // px per screen cell in the exported file
+      const cellPreview = cellExport * (workW / expW)
+      set('cell', Math.min(24, Math.max(3, Math.round(cellPreview * 2) / 2)))
+    },
+    [params.mode],
+  )
+
   /** enabling art-in-marks must never touch the user's screen parameters */
   const enableKeepArt = (on: boolean) => set('keepArt', on)
 
   const plateAngles = PLATE_ANGLES(params.angleDeg)
   const isCmyk = params.mode === 'cmyk'
+  // ruling readout: what dpi/lpi means at the export resolution
+  const rulingCellExport = dpi / lpi // px per cell in the exported PNG
+  const rulingImg = origRef.current
+  const rulingNat = rulingImg ? Math.max(rulingImg.naturalWidth, rulingImg.naturalHeight) : 0
+  const rulingWorkW = rulingNat ? rulingNat * Math.min(1, (isCmyk ? 1400 : MAX_WORK) / rulingNat) : 1800
+  const rulingExpW = rulingNat ? rulingNat * Math.min(1, MAX_EXPORT / rulingNat) : 2600
+  const rulingPreviewCell = rulingCellExport * (rulingWorkW / rulingExpW)
+  const rulingDotsAcross = Math.round(rulingExpW / rulingCellExport)
+  const rulingClamped = rulingPreviewCell < 3 || rulingPreviewCell > 24
 
   return (
     <div className="dark min-h-screen bg-zinc-950 text-zinc-100">
@@ -563,10 +594,41 @@ export default function HalftoneStudio() {
                       <div className="grid grid-cols-4 gap-1 text-center font-mono text-[10px] text-zinc-500">
                         {(['C', 'M', 'Y', 'K'] as const).map((pl) => (
                           <div key={pl} className="rounded border border-zinc-800 py-1">
-                            {pl} {plateAngles[pl]}°
+                            {pl} {params.uniformPlates ? params.angleDeg : plateAngles[pl]}°
                           </div>
                         ))}
                       </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <Button
+                          size="sm"
+                          variant={!params.uniformPlates ? 'default' : 'outline'}
+                          className={`h-7 text-xs ${
+                            !params.uniformPlates
+                              ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                              : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+                          }`}
+                          onClick={() => set('uniformPlates', false)}
+                        >
+                          Rosette angles
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant={params.uniformPlates ? 'default' : 'outline'}
+                          className={`h-7 text-xs ${
+                            params.uniformPlates
+                              ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                              : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+                          }`}
+                          onClick={() => set('uniformPlates', true)}
+                        >
+                          Uniform (Color Halftone)
+                        </Button>
+                      </div>
+                      <p className="text-[10px] leading-relaxed text-zinc-500">
+                        Rosette = classic print angles (30° apart, Y 15° off).
+                        Uniform = every plate at one angle, like Photoshop&apos;s
+                        Pixelate → Color Halftone with equalized channels.
+                      </p>
                       <SliderField
                         label="Black plate strength"
                         value={params.kStrength}
@@ -615,10 +677,15 @@ export default function HalftoneStudio() {
                   value={params.cell}
                   min={3}
                   max={24}
-                  step={1}
-                  display={`${params.cell} px`}
+                  step={0.5}
+                  display={`${params.cell % 1 === 0 ? params.cell : params.cell.toFixed(1)} px`}
                   onChange={(v) => set('cell', v)}
                 />
+                <p className="text-[10px] leading-relaxed text-zinc-500">
+                  Photoshop&apos;s Color Halftone “Max Radius” is half this pitch —
+                  its 8–12 sweet spot ≈ 16–24 px here. Set it precisely with the
+                  Print ruling section below.
+                </p>
                 <SliderField
                   label="Mark scale (dot area)"
                   value={params.dotScale}
@@ -647,6 +714,49 @@ export default function HalftoneStudio() {
                     aria-label="Render marks with hard one-bit edges"
                   />
                 </div>
+              </Section>
+
+              {/* print ruling — Photoshop Bitmap → Halftone Screen units */}
+              <Section title="Print ruling (ppi × lpi)">
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[150, 300, 600, 1200].map((v) => (
+                    <Button
+                      key={v}
+                      size="sm"
+                      variant={dpi === v ? 'default' : 'outline'}
+                      className={`h-7 px-1 font-mono text-xs ${
+                        dpi === v
+                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                          : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+                      }`}
+                      onClick={() => {
+                        setDpi(v)
+                        applyRuling(v, lpi)
+                      }}
+                    >
+                      {v} ppi
+                    </Button>
+                  ))}
+                </div>
+                <SliderField
+                  label="Screen frequency"
+                  value={lpi}
+                  min={8}
+                  max={100}
+                  step={1}
+                  display={`${lpi} lpi`}
+                  onChange={(v) => {
+                    setLpi(v)
+                    applyRuling(dpi, v)
+                  }}
+                />
+                <p className="text-[10px] leading-relaxed text-zinc-500">
+                  {dpi} ppi × {lpi} lpi → <span className="font-mono text-zinc-400">{rulingCellExport.toFixed(1)} px</span> cell in the
+                  exported PNG, ≈{rulingDotsAcross} dots across. Lower lpi = bigger
+                  dots, exactly like Photoshop&apos;s Halftone Screen frequency.
+                  {rulingClamped &&
+                    ' That ruling is outside the 3–24 px preview range and was clamped — pick a higher lpi or lower ppi.'}
+                </p>
               </Section>
 
               {/* mark fill — flat ink vs artwork-in-halftone */}

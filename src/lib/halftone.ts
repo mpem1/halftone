@@ -55,6 +55,7 @@ export interface HalftoneParams {
   contrast: number // -1..1 (0 = unchanged)
   kStrength: number // 0..1 black-plate strength in CMYK mode
   plateFilter: PlateFilter // which CMYK plate(s) to show
+  uniformPlates: boolean // CMYK: all plates share one angle (Photoshop Color Halftone look) vs rosette offsets
   inkColor: string // hex, single mode
   transparent: boolean // marks on transparent background (alpha PNG)
   crisp: boolean // hard 1-bit mark edges — no anti-aliasing (print mode)
@@ -76,6 +77,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   contrast: 0,
   kStrength: 0.55,
   plateFilter: 'all',
+  uniformPlates: false,
   inkColor: '#000000',
   transparent: false,
   crisp: true,
@@ -535,7 +537,11 @@ export function renderHalftone(
         }
       }
       blurInk(inkMap, w, h, cell)
-      const th = theta + (plate.offset * Math.PI) / 180
+      // Rosette mode: classic ink angles (C+15 M+75 Y+0 K+45 from the base —
+      // the US standard set rotated). Uniform mode: every plate at the base
+      // angle, replicating Photoshop Color Halftone with equalized channels.
+      const th =
+        theta + ((p.uniformPlates ? 0 : plate.offset) * Math.PI) / 180
       const cov = screenCoverage(
         inkMap, w, h, th, cell, p.dotScale, p.shape, crisp, ss,
       )
