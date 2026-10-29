@@ -3,16 +3,19 @@
  *
  * Port of the validated Python pipeline to Canvas2D + typed arrays.
  * Pipeline per screen layer:
- *   1. Rotate the (adjusted) source into screen space via canvas transform.
+ *   1. Adjust the source (tone / saturation / contrast) in image space.
  *   2. Build the ink map (luminance / CMY channel), multiplied by an
  *      analytic validity mask so nothing outside the real image dots.
- *   3. Per-cell average -> area-proportional mark size (dot/square/diamond/
- *      ellipse radius, or line half-thickness).
- *   4. Per-pixel coverage with a 1px AA band, colored by flat ink or by the
- *      source artwork itself ("keep art" mode).
- *   5. Rotate the composite back into image orientation.
- * CMYK mode renders 4 independently-angled plates and multiply-composites
- * them in image space.
+ *   3. Per-cell average in rotated screen space -> area-proportional mark
+ *      size (dot/square/diamond/ellipse radius, or line half-thickness).
+ *   4. Analytic per-pixel coverage in screen space (1px AA band, or hard
+ *      1-bit when crisp), mapped back to image space by exact inverse
+ *      rotation sampling — no canvas resampling anywhere, so mark edges
+ *      stay as sharp as the screen grid allows (Photoshop-bitmap style).
+ *   5. Composite flat ink or the source artwork itself ("keep art") per
+ *      image pixel.
+ * CMYK mode renders 4 independently-angled plates (1-bit capable) and
+ * multiply-composites them in image space.
  */
 
 export type ScreenShape =
@@ -42,7 +45,7 @@ export interface HalftoneParams {
   plateFilter: PlateFilter // which CMYK plate(s) to show
   inkColor: string // hex, single mode
   transparent: boolean // marks on transparent background (alpha PNG)
-  hardAlpha: boolean // threshold alpha — no semi-transparent pixels
+  crisp: boolean // hard 1-bit mark edges — no anti-aliasing (print mode)
   knockout: boolean // remove background-colored source areas before screening
   knockoutColor: string // hex, background color to remove
   knockoutTolerance: number // 0..0.35 how far from knockoutColor still counts
@@ -63,7 +66,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   plateFilter: 'all',
   inkColor: '#000000',
   transparent: false,
-  hardAlpha: false,
+  crisp: true,
   knockout: false,
   knockoutColor: '#ffffff',
   knockoutTolerance: 0.1,
@@ -136,48 +139,6 @@ function adjustImageData(img: ImageData, p: HalftoneParams): void {
   }
 }
 
-/** Draw src rotated by theta into a (rw, rh) screen-space canvas. */
-function drawIntoScreen(
-  src: HTMLCanvasElement,
-  theta: number,
-  rw: number,
-  rh: number,
-  w: number,
-  h: number,
-): HTMLCanvasElement {
-  const c = document.createElement('canvas')
-  c.width = rw
-  c.height = rh
-  const ctx = c.getContext('2d')!
-  ctx.imageSmoothingEnabled = true
-  ctx.imageSmoothingQuality = 'high'
-  ctx.translate(rw / 2, rh / 2)
-  ctx.rotate(theta)
-  ctx.translate(-w / 2, -h / 2)
-  ctx.drawImage(src, 0, 0)
-  return c
-}
-
-/** Draw a screen-space canvas back into image orientation on dst ctx. */
-function drawBackToImage(
-  screenCanvas: HTMLCanvasElement,
-  dstCtx: CanvasRenderingContext2D,
-  theta: number,
-  rw: number,
-  rh: number,
-  w: number,
-  h: number,
-): void {
-  dstCtx.save()
-  dstCtx.imageSmoothingEnabled = true
-  dstCtx.imageSmoothingQuality = 'high'
-  dstCtx.translate(w / 2, h / 2)
-  dstCtx.rotate(-theta)
-  dstCtx.translate(-rw / 2, -rh / 2)
-  dstCtx.drawImage(screenCanvas, 0, 0)
-  dstCtx.restore()
-}
-
 interface ScreenAlpha {
   alpha: Float32Array // (rh, rw) coverage 0..1
   means: Float32Array // per-cell ink (for line thickness)
@@ -200,6 +161,7 @@ function buildScreenAlpha(
   cell: number,
   dotScale: number,
   shape: ScreenShape,
+  crisp: boolean,
 ): ScreenAlpha {
   const ca = Math.cos(theta)
   const sa = Math.sin(theta)
@@ -340,43 +302,42 @@ function buildScreenAlpha(
           ? hMap[idx]
           : r * shapeFactor
       const a = 0.5 + size - d
-      alpha[idx] = a <= 0 ? 0 : a >= 1 ? 1 : a
+      // crisp: threshold to 1-bit like a bitmap halftone — prints clean
+      alpha[idx] = crisp ? (a >= 0.5 ? 1 : 0) : a <= 0 ? 0 : a >= 1 ? 1 : a
     }
   }
 
   return { alpha, means, rows, cols, rw, rh, cell }
 }
 
-/** Rotate a screen-space coverage map back to image space (0..1 per pixel). */
+/** Map screen-space coverage back to image space EXACTLY: every image
+ *  pixel center is rotated into the screen grid and the analytic coverage
+ *  is nearest-sampled. No canvas resampling pass — a 1px edge stays a 1px
+ *  edge instead of being smeared by bilinear interpolation. */
 function coverageToImage(
   sa: ScreenAlpha,
   w: number,
   h: number,
   theta: number,
 ): Float32Array {
-  const sc = document.createElement('canvas')
-  sc.width = sa.rw
-  sc.height = sa.rh
-  const sctx = sc.getContext('2d')!
-  const id = sctx.createImageData(sa.rw, sa.rh)
-  const dd = id.data
-  for (let i = 0, j = 0; i < sa.alpha.length; i++, j += 4) {
-    const a = (sa.alpha[i] * 255) | 0
-    dd[j] = a
-    dd[j + 1] = a
-    dd[j + 2] = a
-    dd[j + 3] = 255
-  }
-  sctx.putImageData(id, 0, 0)
-
-  const tmp = document.createElement('canvas')
-  tmp.width = w
-  tmp.height = h
-  const tctx = tmp.getContext('2d')!
-  drawBackToImage(sc, tctx, theta, sa.rw, sa.rh, w, h)
-  const back = tctx.getImageData(0, 0, w, h).data
+  const ca = Math.cos(theta)
+  const sn = Math.sin(theta)
   const cov = new Float32Array(w * h)
-  for (let i = 0, j = 0; i < cov.length; i++, j += 4) cov[i] = back[j] / 255
+  const hw = w / 2
+  const hh = h / 2
+  const hrw = sa.rw / 2
+  const hrh = sa.rh / 2
+  for (let y = 0; y < h; y++) {
+    const uy = y + 0.5 - hh
+    let i = y * w
+    for (let x = 0; x < w; x++, i++) {
+      const ux = x + 0.5 - hw
+      const sx = ca * ux - sn * uy + hrw
+      const sy = sn * ux + ca * uy + hrh
+      if (sx < 0 || sy < 0 || sx >= sa.rw || sy >= sa.rh) continue
+      cov[i] = sa.alpha[(sy | 0) * sa.rw + (sx | 0)]
+    }
+  }
   return cov
 }
 
@@ -447,21 +408,12 @@ export function renderHalftone(
   out.width = w
   out.height = h
   const octx = out.getContext('2d')!
-  octx.imageSmoothingEnabled = true
-  octx.imageSmoothingQuality = 'high'
 
-  // 1) adjusted source
-  const adj = document.createElement('canvas')
-  adj.width = w
-  adj.height = h
-  const actx = adj.getContext('2d')!
-  actx.drawImage(src, 0, 0)
-  const adjId = actx.getImageData(0, 0, w, h)
+  // 1) adjusted source — tone / saturation / contrast happen BEFORE screening
+  const adjId = src.getContext('2d')!.getImageData(0, 0, w, h)
   adjustImageData(adjId, p)
-  actx.putImageData(adjId, 0, 0)
 
   const theta = (p.angleDeg * Math.PI) / 180
-  const paper: [number, number, number] = [1, 1, 1]
   const white = document.createElement('canvas')
   white.width = w
   white.height = h
@@ -478,7 +430,16 @@ export function renderHalftone(
       const lum = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255
       inkMap[i] = Math.pow(1 - lum, 1.18) * (mask ? mask[i] : 1)
     }
-    const sa = buildScreenAlpha(inkMap, w, h, theta, p.cell, p.dotScale, p.shape)
+    const sa = buildScreenAlpha(
+      inkMap,
+      w,
+      h,
+      theta,
+      p.cell,
+      p.dotScale,
+      p.shape,
+      p.crisp,
+    )
 
     if (p.transparent) {
       // true knockout: alpha = ink coverage, straight-alpha RGBA, no paper
@@ -487,8 +448,7 @@ export function renderHalftone(
       const od = outId.data
       const [ir, ig, ib] = hexToRgb01(p.inkColor)
       for (let i = 0, j = 0; i < w * h; i++, j += 4) {
-        let a = cov[i]
-        if (p.hardAlpha) a = a >= 0.5 ? 1 : 0
+        const a = cov[i]
         if (p.keepArt) {
           od[j] = d[j]
           od[j + 1] = d[j + 1]
@@ -504,45 +464,31 @@ export function renderHalftone(
       return performance.now() - t0
     }
 
-    // composite in screen space on paper
-    const sc = document.createElement('canvas')
-    sc.width = sa.rw
-    sc.height = sa.rh
-    const sctx = sc.getContext('2d')!
-    const sid = sctx.createImageData(sa.rw, sa.rh)
-    const sd = sid.data
-
-    // optional per-pixel artwork color in screen space
-    let artData: Uint8ClampedArray | null = null
-    if (p.keepArt) {
-      const art = drawIntoScreen(adj, theta, sa.rw, sa.rh, w, h)
-      artData = art.getContext('2d')!.getImageData(0, 0, sa.rw, sa.rh).data
-    }
+    // composite in image space — coverage is inverse-mapped exactly and art
+    // colors come straight from the adjusted source: zero resampling, so a
+    // mark edge is exactly as sharp as the screen grid defines it
+    const cov = coverageToImage(sa, w, h, theta)
+    const outId = new ImageData(w, h)
+    const od = outId.data
     const [ir, ig, ib] = hexToRgb01(p.inkColor)
-
-    for (let i = 0, j = 0; i < sa.alpha.length; i++, j += 4) {
-      const a = sa.alpha[i]
+    for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+      const a = cov[i]
       let cr: number, cg: number, cb: number
-      if (artData) {
-        const k = j
-        cr = artData[k] / 255
-        cg = artData[k + 1] / 255
-        cb = artData[k + 2] / 255
+      if (p.keepArt) {
+        cr = d[j] / 255
+        cg = d[j + 1] / 255
+        cb = d[j + 2] / 255
       } else {
         cr = ir
         cg = ig
         cb = ib
       }
-      sd[j] = ((paper[0] * (1 - a) + cr * a) * 255) | 0
-      sd[j + 1] = ((paper[1] * (1 - a) + cg * a) * 255) | 0
-      sd[j + 2] = ((paper[2] * (1 - a) + cb * a) * 255) | 0
-      sd[j + 3] = 255
+      od[j] = ((1 - a + cr * a) * 255) | 0
+      od[j + 1] = ((1 - a + cg * a) * 255) | 0
+      od[j + 2] = ((1 - a + cb * a) * 255) | 0
+      od[j + 3] = 255
     }
-    sctx.putImageData(sid, 0, 0)
-
-    octx.fillStyle = '#ffffff'
-    octx.fillRect(0, 0, w, h)
-    drawBackToImage(sc, octx, theta, sa.rw, sa.rh, w, h)
+    octx.putImageData(outId, 0, 0)
   } else {
     // CMYK separation, multiply-composited in image space
     const d = adjId.data
@@ -594,7 +540,16 @@ export function renderHalftone(
         }
       }
       const th = theta + (plate.offset * Math.PI) / 180
-      const sa = buildScreenAlpha(inkMap, w, h, th, p.cell, p.dotScale, p.shape)
+      const sa = buildScreenAlpha(
+        inkMap,
+        w,
+        h,
+        th,
+        p.cell,
+        p.dotScale,
+        p.shape,
+        p.crisp,
+      )
       if (invUnion) {
         const cov = coverageToImage(sa, w, h, th)
         for (let i = 0; i < n; i++) invUnion[i] *= 1 - cov[i]
@@ -612,8 +567,7 @@ export function renderHalftone(
       // straight-alpha assembly: union coverage as alpha, ink color unmixed
       // from the white-paper composite so it reads correctly on any backdrop
       for (let i = 0, j = 0; i < n; i++, j += 4) {
-        let a = 1 - invUnion[i]
-        if (p.hardAlpha) a = a >= 0.5 ? 1 : 0
+        const a = 1 - invUnion[i]
         if (a > 0) {
           for (let c = 0; c < 3; c++) {
             const v = (ad[j + c] / 255 - (1 - a)) / a

@@ -622,6 +622,19 @@ export default function HalftoneStudio() {
                   display={`${Math.round(params.dotScale * 100)}%`}
                   onChange={(v) => set('dotScale', v)}
                 />
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">
+                    Hard edges (print)
+                    <span className="block text-[10px] text-zinc-500">
+                      1-bit marks, no anti-aliasing — like Photoshop bitmap
+                    </span>
+                  </Label>
+                  <Switch
+                    checked={params.crisp}
+                    onCheckedChange={(v) => set('crisp', v)}
+                    aria-label="Render marks with hard one-bit edges"
+                  />
+                </div>
               </Section>
 
               {/* mark fill — flat ink vs artwork-in-halftone */}
@@ -686,19 +699,10 @@ export default function HalftoneStudio() {
                   />
                 </div>
                 {params.transparent && (
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs text-zinc-300">
-                      Hard edges
-                      <span className="block text-[10px] text-zinc-500">
-                        no semi-transparent pixels
-                      </span>
-                    </Label>
-                    <Switch
-                      checked={params.hardAlpha}
-                      onCheckedChange={(v) => set('hardAlpha', v)}
-                      aria-label="Threshold alpha so no pixel is semi-transparent"
-                    />
-                  </div>
+                  <p className="text-xs leading-relaxed text-zinc-500">
+                    Export keeps only the marks — paper becomes transparent alpha.
+                    Turn on B&amp;W tone for a true 1-bit transparent PNG.
+                  </p>
                 )}
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
