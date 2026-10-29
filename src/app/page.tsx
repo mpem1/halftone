@@ -25,6 +25,7 @@ import {
   type OutputMode,
   type PlateFilter,
   type ScreenShape,
+  type ToneMode,
 } from '@/lib/halftone'
 
 const MAX_WORK = 1800 // working resolution cap (long edge)
@@ -528,43 +529,49 @@ export default function HalftoneStudio() {
                     </Button>
                   ))}
                 </div>
-                {isCmyk && (
-                  <>
-                    <div className="flex flex-wrap gap-1.5">
-                      {PLATES.map((pl) => (
-                        <Button
-                          key={pl}
-                          size="sm"
-                          variant={params.plateFilter === pl ? 'default' : 'outline'}
-                          className={`h-7 px-2.5 font-mono text-xs ${
-                            params.plateFilter === pl
-                              ? 'bg-amber-500 text-zinc-950 hover:bg-amber-400'
-                              : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
-                          }`}
-                          onClick={() => set('plateFilter', pl)}
-                        >
-                          {pl === 'all' ? 'All plates' : pl}
-                        </Button>
-                      ))}
-                    </div>
-                    <div className="grid grid-cols-4 gap-1 text-center font-mono text-[10px] text-zinc-500">
-                      {(['C', 'M', 'Y', 'K'] as const).map((pl) => (
-                        <div key={pl} className="rounded border border-zinc-800 py-1">
-                          {pl} {plateAngles[pl]}°
-                        </div>
-                      ))}
-                    </div>
-                    <SliderField
-                      label="Black plate strength"
-                      value={params.kStrength}
-                      min={0}
-                      max={1}
-                      step={0.05}
-                      display={`${Math.round(params.kStrength * 100)}%`}
-                      onChange={(v) => set('kStrength', v)}
-                    />
-                  </>
-                )}
+                {isCmyk &&
+                  (params.tone === 'bw' ? (
+                    <p className="text-xs leading-relaxed text-zinc-500">
+                      B&amp;W prints through the black plate only — switch tone to
+                      Color or Grayscale for the full CMYK separation.
+                    </p>
+                  ) : (
+                    <>
+                      <div className="flex flex-wrap gap-1.5">
+                        {PLATES.map((pl) => (
+                          <Button
+                            key={pl}
+                            size="sm"
+                            variant={params.plateFilter === pl ? 'default' : 'outline'}
+                            className={`h-7 px-2.5 font-mono text-xs ${
+                              params.plateFilter === pl
+                                ? 'bg-amber-500 text-zinc-950 hover:bg-amber-400'
+                                : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+                            }`}
+                            onClick={() => set('plateFilter', pl)}
+                          >
+                            {pl === 'all' ? 'All plates' : pl}
+                          </Button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-4 gap-1 text-center font-mono text-[10px] text-zinc-500">
+                        {(['C', 'M', 'Y', 'K'] as const).map((pl) => (
+                          <div key={pl} className="rounded border border-zinc-800 py-1">
+                            {pl} {plateAngles[pl]}°
+                          </div>
+                        ))}
+                      </div>
+                      <SliderField
+                        label="Black plate strength"
+                        value={params.kStrength}
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        display={`${Math.round(params.kStrength * 100)}%`}
+                        onChange={(v) => set('kStrength', v)}
+                      />
+                    </>
+                  ))}
               </Section>
 
               {/* screen */}
@@ -733,23 +740,58 @@ export default function HalftoneStudio() {
 
               {/* adjustments */}
               <Section title="Image adjustments">
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs text-zinc-300">Black &amp; white</Label>
-                  <Switch
-                    checked={params.blackWhite}
-                    onCheckedChange={(v) => set('blackWhite', v)}
-                    aria-label="Convert to black and white"
-                  />
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      ['color', 'Color'],
+                      ['gray', 'Grayscale'],
+                      ['bw', 'B&W'],
+                    ] as [ToneMode, string][]
+                  ).map(([t, label]) => (
+                    <Button
+                      key={t}
+                      size="sm"
+                      variant={params.tone === t ? 'default' : 'outline'}
+                      className={
+                        params.tone === t
+                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                          : 'border-zinc-700 hover:bg-zinc-800'
+                      }
+                      onClick={() => set('tone', t)}
+                    >
+                      {label}
+                    </Button>
+                  ))}
                 </div>
-                <SliderField
-                  label="Saturation"
-                  value={params.saturation}
-                  min={-1}
-                  max={1}
-                  step={0.05}
-                  display={`${params.saturation > 0 ? '+' : ''}${Math.round(params.saturation * 100)}`}
-                  onChange={(v) => set('saturation', v)}
-                />
+                <p className="text-xs leading-relaxed text-zinc-500">
+                  {params.tone === 'bw'
+                    ? 'True 1-bit black & white — every pixel is pushed to pure black or pure white at the threshold. No grays survive, even inside the marks.'
+                    : params.tone === 'gray'
+                      ? 'Continuous grayscale — smooth tones that drive the halftone shades.'
+                      : 'Full color — saturation and contrast apply before screening.'}
+                </p>
+                {params.tone === 'bw' && (
+                  <SliderField
+                    label="Threshold"
+                    value={params.threshold}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    display={`${Math.round(params.threshold * 100)}%`}
+                    onChange={(v) => set('threshold', v)}
+                  />
+                )}
+                {params.tone === 'color' && (
+                  <SliderField
+                    label="Saturation"
+                    value={params.saturation}
+                    min={-1}
+                    max={1}
+                    step={0.05}
+                    display={`${params.saturation > 0 ? '+' : ''}${Math.round(params.saturation * 100)}`}
+                    onChange={(v) => set('saturation', v)}
+                  />
+                )}
                 <SliderField
                   label="Contrast"
                   value={params.contrast}

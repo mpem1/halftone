@@ -25,6 +25,7 @@ export type ScreenShape =
   | 'zigzag'
 export type OutputMode = 'single' | 'cmyk'
 export type PlateFilter = 'all' | 'C' | 'M' | 'Y' | 'K'
+export type ToneMode = 'color' | 'gray' | 'bw'
 
 export interface HalftoneParams {
   mode: OutputMode
@@ -33,9 +34,10 @@ export interface HalftoneParams {
   cell: number // screen pitch in px (3..24)
   dotScale: number // 0.2..1.2 mark size factor
   keepArt: boolean // fill marks with source artwork color (single mode)
-  saturation: number // -1..1 (0 = unchanged)
+  tone: ToneMode // color / continuous grayscale / 1-bit black & white
+  threshold: number // 0..1 white cutoff used when tone = 'bw'
+  saturation: number // -1..1 (0 = unchanged, applies to tone 'color')
   contrast: number // -1..1 (0 = unchanged)
-  blackWhite: boolean // force desaturation
   kStrength: number // 0..1 black-plate strength in CMYK mode
   plateFilter: PlateFilter // which CMYK plate(s) to show
   inkColor: string // hex, single mode
@@ -53,9 +55,10 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   cell: 6,
   dotScale: 0.62,
   keepArt: false,
+  tone: 'color',
+  threshold: 0.5,
   saturation: 0,
   contrast: 0,
-  blackWhite: false,
   kStrength: 0.55,
   plateFilter: 'all',
   inkColor: '#000000',
@@ -93,10 +96,15 @@ function hexToRgb01(hex: string): [number, number, number] {
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255]
 }
 
-/** Apply saturation / contrast / B&W to an ImageData in place. */
+/** Apply tone + saturation / contrast to an ImageData in place.
+ *  tone 'gray' desaturates to continuous luminance (real grays survive).
+ *  tone 'bw' is TRUE black & white: the contrasted gray is thresholded at
+ *  p.threshold so every pixel ends up pure #000 or #fff — no grays. */
 function adjustImageData(img: ImageData, p: HalftoneParams): void {
-  const sat = p.blackWhite ? 0 : 1 + p.saturation
+  const sat = p.tone === 'color' ? 1 + p.saturation : 0
   const con = 1 + p.contrast
+  const binarize = p.tone === 'bw'
+  const thr = p.threshold
   const d = img.data
   for (let i = 0; i < d.length; i += 4) {
     let r = d[i] / 255
@@ -113,9 +121,17 @@ function adjustImageData(img: ImageData, p: HalftoneParams): void {
       g = (g - 0.5) * con + 0.5
       b = (b - 0.5) * con + 0.5
     }
-    d[i] = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
-    d[i + 1] = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
-    d[i + 2] = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
+    if (binarize) {
+      // after desaturation all channels carry the same gray value
+      const v = g >= thr ? 255 : 0
+      d[i] = v
+      d[i + 1] = v
+      d[i + 2] = v
+    } else {
+      d[i] = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
+      d[i + 1] = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
+      d[i + 2] = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
+    }
     d[i + 3] = 255
   }
 }
@@ -548,8 +564,14 @@ export function renderHalftone(
       maxCh[i] = Math.max(r, g, b)
     }
 
+    // 1-bit B&W prints through the black plate only — C+M+Y screens of a gray
+    // image would just stack into a muddy overprint; K alone is the clean plate.
     const plates: PlateName[] =
-      p.plateFilter === 'all' ? ['C', 'M', 'Y', 'K'] : [p.plateFilter]
+      p.tone === 'bw'
+        ? ['K']
+        : p.plateFilter === 'all'
+          ? ['C', 'M', 'Y', 'K']
+          : [p.plateFilter]
 
     // start from paper, multiply each selected plate
     const acc = whctx.getImageData(0, 0, w, h) // white
@@ -564,8 +586,11 @@ export function renderHalftone(
         if (plate.channel >= 0) {
           inkMap[i] = Math.pow(1 - chan[plate.channel][i], 1.1) * (mask ? mask[i] : 1)
         } else {
+          // full-strength black when tone = 'bw' (kStrength shapes photo K only)
           inkMap[i] =
-            Math.pow(1 - maxCh[i], 1.25) * p.kStrength * (mask ? mask[i] : 1)
+            Math.pow(1 - maxCh[i], 1.25) *
+            (p.tone === 'bw' ? 1 : p.kStrength) *
+            (mask ? mask[i] : 1)
         }
       }
       const th = theta + (plate.offset * Math.PI) / 180
