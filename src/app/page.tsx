@@ -50,10 +50,32 @@ function ShapeGlyph({ shape }: { shape: ScreenShape }) {
           <line x1="1.5" y1="12" x2="14.5" y2="12" />
         </g>
       )
+    case 'wave':
+      return (
+        <g stroke={c} strokeWidth="1.8" fill="none">
+          <path d="M1 6 Q 4.25 1.5, 7.5 6 T 14 6" />
+          <path d="M2 11 Q 5.25 6.5, 8.5 11 T 15 11" />
+        </g>
+      )
+    case 'zigzag':
+      return (
+        <g stroke={c} strokeWidth="1.8" fill="none">
+          <path d="M1.5 5 L5.5 2.5 L9.5 5 L13.5 2.5" />
+          <path d="M1.5 12 L5.5 9.5 L9.5 12 L13.5 9.5" />
+        </g>
+      )
   }
 }
 
-const SHAPES: ScreenShape[] = ['dot', 'square', 'diamond', 'ellipse', 'line']
+const SHAPES: ScreenShape[] = [
+  'dot',
+  'square',
+  'diamond',
+  'ellipse',
+  'line',
+  'wave',
+  'zigzag',
+]
 const PLATES: PlateFilter[] = ['all', 'C', 'M', 'Y', 'K']
 
 const clampZ = (z: number) => Math.min(16, Math.max(0.02, z))
@@ -266,7 +288,9 @@ export default function HalftoneStudio() {
       if (blob) {
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
-        a.download = `halftone-${params.mode}-${params.shape}.png`
+        a.download = `halftone-${params.mode}-${params.shape}${
+          params.transparent ? '-transparent' : ''
+        }.png`
         a.click()
         URL.revokeObjectURL(a.href)
       }
@@ -351,7 +375,7 @@ export default function HalftoneStudio() {
           <div className="flex items-baseline gap-3">
             <h1 className="text-lg font-semibold tracking-tight">Halftone Studio</h1>
             <p className="hidden text-xs text-zinc-500 sm:block">
-              dots · squares · diamonds · ellipses · lines — CMYK, art-in-marks &amp; zoomable preview
+              dots · lines · waves · zigzags — CMYK, art-in-marks &amp; transparent PNG
             </p>
           </div>
           <Badge variant="outline" className="border-zinc-700 font-mono text-xs text-zinc-400">
@@ -643,6 +667,69 @@ export default function HalftoneStudio() {
                   )}
                 </Section>
               )}
+
+              {/* background & transparency */}
+              <Section title="Background">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">Transparent background</Label>
+                  <Switch
+                    checked={params.transparent}
+                    onCheckedChange={(v) => set('transparent', v)}
+                    aria-label="Render marks on a transparent background"
+                  />
+                </div>
+                {params.transparent && (
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs text-zinc-300">
+                      Hard edges
+                      <span className="block text-[10px] text-zinc-500">
+                        no semi-transparent pixels
+                      </span>
+                    </Label>
+                    <Switch
+                      checked={params.hardAlpha}
+                      onCheckedChange={(v) => set('hardAlpha', v)}
+                      aria-label="Threshold alpha so no pixel is semi-transparent"
+                    />
+                  </div>
+                )}
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">
+                    Remove background color
+                    <span className="block text-[10px] text-zinc-500">
+                      knockout — no dots where it shows
+                    </span>
+                  </Label>
+                  <Switch
+                    checked={params.knockout}
+                    onCheckedChange={(v) => set('knockout', v)}
+                    aria-label="Remove background color before halftoning"
+                  />
+                </div>
+                {params.knockout && (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-zinc-300">Knockout color</Label>
+                      <input
+                        type="color"
+                        value={params.knockoutColor}
+                        onChange={(e) => set('knockoutColor', e.target.value)}
+                        className="h-8 w-12 cursor-pointer rounded border border-zinc-700 bg-zinc-900"
+                        aria-label="Knockout color"
+                      />
+                    </div>
+                    <SliderField
+                      label="Tolerance"
+                      value={params.knockoutTolerance}
+                      min={0}
+                      max={0.35}
+                      step={0.01}
+                      display={`${Math.round(params.knockoutTolerance * 100)}%`}
+                      onChange={(v) => set('knockoutTolerance', v)}
+                    />
+                  </>
+                )}
+              </Section>
 
               {/* adjustments */}
               <Section title="Image adjustments">

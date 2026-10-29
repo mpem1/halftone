@@ -15,7 +15,14 @@
  * them in image space.
  */
 
-export type ScreenShape = 'dot' | 'square' | 'diamond' | 'ellipse' | 'line'
+export type ScreenShape =
+  | 'dot'
+  | 'square'
+  | 'diamond'
+  | 'ellipse'
+  | 'line'
+  | 'wave'
+  | 'zigzag'
 export type OutputMode = 'single' | 'cmyk'
 export type PlateFilter = 'all' | 'C' | 'M' | 'Y' | 'K'
 
@@ -32,6 +39,11 @@ export interface HalftoneParams {
   kStrength: number // 0..1 black-plate strength in CMYK mode
   plateFilter: PlateFilter // which CMYK plate(s) to show
   inkColor: string // hex, single mode
+  transparent: boolean // marks on transparent background (alpha PNG)
+  hardAlpha: boolean // threshold alpha — no semi-transparent pixels
+  knockout: boolean // remove background-colored source areas before screening
+  knockoutColor: string // hex, background color to remove
+  knockoutTolerance: number // 0..0.35 how far from knockoutColor still counts
 }
 
 export const DEFAULT_PARAMS: HalftoneParams = {
@@ -47,6 +59,11 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   kStrength: 0.55,
   plateFilter: 'all',
   inkColor: '#000000',
+  transparent: false,
+  hardAlpha: false,
+  knockout: false,
+  knockoutColor: '#ffffff',
+  knockoutTolerance: 0.1,
 }
 
 export const SHAPE_LABELS: Record<ScreenShape, string> = {
@@ -55,6 +72,8 @@ export const SHAPE_LABELS: Record<ScreenShape, string> = {
   diamond: 'Diamonds',
   ellipse: 'Ellipses',
   line: 'Lines',
+  wave: 'Waves',
+  zigzag: 'Zigzags',
 }
 
 /** CMYK plate definitions: ink rgb (0..1) + screen angle offset. */
@@ -283,8 +302,27 @@ function buildScreenAlpha(
         case 'line':
           d = Math.abs(dy)
           break
+        case 'wave': {
+          // sine row: one period every 2 cells, phase continuous across cells
+          const px = x + 0.5
+          const amp = cell * 0.28
+          d = Math.abs(dy - amp * Math.sin((px * Math.PI) / cell))
+          break
+        }
+        case 'zigzag': {
+          // triangle row: one period every 2 cells
+          const px = x + 0.5
+          const period = cell * 2
+          const t = (px % period) / period
+          const tri = t < 0.5 ? t * 2 : 2 - t * 2
+          d = Math.abs(dy - cell * 0.28 * (tri * 2 - 1))
+          break
+        }
       }
-      const size = shape === 'line' ? hMap[idx] : r * shapeFactor
+      const size =
+        shape === 'line' || shape === 'wave' || shape === 'zigzag'
+          ? hMap[idx]
+          : r * shapeFactor
       const a = 0.5 + size - d
       alpha[idx] = a <= 0 ? 0 : a >= 1 ? 1 : a
     }
@@ -293,15 +331,13 @@ function buildScreenAlpha(
   return { alpha, means, rows, cols, rw, rh, cell }
 }
 
-/** Render marks for one plate into an RGBA buffer on paper (multiply-safe). */
-function plateToImageData(
+/** Rotate a screen-space coverage map back to image space (0..1 per pixel). */
+function coverageToImage(
   sa: ScreenAlpha,
-  inkRgb: [number, number, number],
   w: number,
   h: number,
   theta: number,
-): ImageData {
-  // coverage back to image space via canvas rotation
+): Float32Array {
   const sc = document.createElement('canvas')
   sc.width = sa.rw
   sc.height = sa.rh
@@ -323,12 +359,45 @@ function plateToImageData(
   const tctx = tmp.getContext('2d')!
   drawBackToImage(sc, tctx, theta, sa.rw, sa.rh, w, h)
   const back = tctx.getImageData(0, 0, w, h).data
+  const cov = new Float32Array(w * h)
+  for (let i = 0, j = 0; i < cov.length; i++, j += 4) cov[i] = back[j] / 255
+  return cov
+}
 
+/** Mask: 0 where source pixel matches the knockout color, 1 elsewhere.
+ *  Soft ramp between tol and tol*1.25 so boundaries fade rather than jag. */
+function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
+  const kc = hexToRgb01(p.knockoutColor)
+  const lo = p.knockoutTolerance
+  const hi = lo * 1.25 + 0.02
+  const d = img.data
+  const mask = new Float32Array(d.length / 4).fill(1)
+  for (let i = 0, j = 0; i < mask.length; i++, j += 4) {
+    const dist = Math.max(
+      Math.abs(d[j] / 255 - kc[0]),
+      Math.abs(d[j + 1] / 255 - kc[1]),
+      Math.abs(d[j + 2] / 255 - kc[2]),
+    )
+    if (dist <= lo) mask[i] = 0
+    else if (dist < hi) mask[i] = (dist - lo) / (hi - lo)
+  }
+  return mask
+}
+
+/** Render marks for one plate into an RGBA buffer on paper (multiply-safe). */
+function plateToImageData(
+  sa: ScreenAlpha,
+  inkRgb: [number, number, number],
+  w: number,
+  h: number,
+  theta: number,
+): ImageData {
+  const cov = coverageToImage(sa, w, h, theta)
   const out = new ImageData(w, h)
   const od = out.data
   const [ir, ig, ib] = inkRgb
   for (let i = 0, j = 0; i < w * h; i++, j += 4) {
-    const a = back[j] / 255
+    const a = cov[i]
     // layer value = 1 - a*(1-ink) per channel (multiply-compositable)
     od[j] = ((1 - a * (1 - ir)) * 255) | 0
     od[j + 1] = ((1 - a * (1 - ig)) * 255) | 0
@@ -385,14 +454,39 @@ export function renderHalftone(
   whctx.fillRect(0, 0, w, h)
 
   if (p.mode === 'single') {
-    // ink map from adjusted luminance
+    // ink map from adjusted luminance (+ background knockout)
     const d = adjId.data
+    const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
     const inkMap = new Float32Array(w * h)
     for (let i = 0, j = 0; i < inkMap.length; i++, j += 4) {
       const lum = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255
-      inkMap[i] = Math.pow(1 - lum, 1.18)
+      inkMap[i] = Math.pow(1 - lum, 1.18) * (mask ? mask[i] : 1)
     }
     const sa = buildScreenAlpha(inkMap, w, h, theta, p.cell, p.dotScale, p.shape)
+
+    if (p.transparent) {
+      // true knockout: alpha = ink coverage, straight-alpha RGBA, no paper
+      const cov = coverageToImage(sa, w, h, theta)
+      const outId = new ImageData(w, h)
+      const od = outId.data
+      const [ir, ig, ib] = hexToRgb01(p.inkColor)
+      for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+        let a = cov[i]
+        if (p.hardAlpha) a = a >= 0.5 ? 1 : 0
+        if (p.keepArt) {
+          od[j] = d[j]
+          od[j + 1] = d[j + 1]
+          od[j + 2] = d[j + 2]
+        } else {
+          od[j] = (ir * 255) | 0
+          od[j + 1] = (ig * 255) | 0
+          od[j + 2] = (ib * 255) | 0
+        }
+        od[j + 3] = (a * 255) | 0
+      }
+      octx.putImageData(outId, 0, 0)
+      return performance.now() - t0
+    }
 
     // composite in screen space on paper
     const sc = document.createElement('canvas')
@@ -437,6 +531,7 @@ export function renderHalftone(
     // CMYK separation, multiply-composited in image space
     const d = adjId.data
     const n = w * h
+    const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
     const chan: Float32Array[] = [
       new Float32Array(n),
       new Float32Array(n),
@@ -459,25 +554,52 @@ export function renderHalftone(
     // start from paper, multiply each selected plate
     const acc = whctx.getImageData(0, 0, w, h) // white
     const ad = acc.data
+    // for transparent output: running product of (1 - coverage) per plate
+    const invUnion = p.transparent ? new Float32Array(n).fill(1) : null
 
     for (const name of plates) {
       const plate = PLATES[name]
       const inkMap = new Float32Array(n)
       for (let i = 0; i < n; i++) {
         if (plate.channel >= 0) {
-          inkMap[i] = Math.pow(1 - chan[plate.channel][i], 1.1)
+          inkMap[i] = Math.pow(1 - chan[plate.channel][i], 1.1) * (mask ? mask[i] : 1)
         } else {
-          inkMap[i] = Math.pow(1 - maxCh[i], 1.25) * p.kStrength
+          inkMap[i] =
+            Math.pow(1 - maxCh[i], 1.25) * p.kStrength * (mask ? mask[i] : 1)
         }
       }
       const th = theta + (plate.offset * Math.PI) / 180
       const sa = buildScreenAlpha(inkMap, w, h, th, p.cell, p.dotScale, p.shape)
+      if (invUnion) {
+        const cov = coverageToImage(sa, w, h, th)
+        for (let i = 0; i < n; i++) invUnion[i] *= 1 - cov[i]
+      }
       const layer = plateToImageData(sa, plate.rgb as [number, number, number], w, h, th)
       const ld = layer.data
       for (let j = 0; j < ad.length; j += 4) {
         ad[j] = (ad[j] * ld[j]) / 255
         ad[j + 1] = (ad[j + 1] * ld[j + 1]) / 255
         ad[j + 2] = (ad[j + 2] * ld[j + 2]) / 255
+      }
+    }
+
+    if (invUnion) {
+      // straight-alpha assembly: union coverage as alpha, ink color unmixed
+      // from the white-paper composite so it reads correctly on any backdrop
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
+        let a = 1 - invUnion[i]
+        if (p.hardAlpha) a = a >= 0.5 ? 1 : 0
+        if (a > 0) {
+          for (let c = 0; c < 3; c++) {
+            const v = (ad[j + c] / 255 - (1 - a)) / a
+            ad[j + c] = Math.min(255, Math.max(0, v * 255)) | 0
+          }
+        } else {
+          ad[j] = 0
+          ad[j + 1] = 0
+          ad[j + 2] = 0
+        }
+        ad[j + 3] = (a * 255) | 0
       }
     }
     octx.putImageData(acc, 0, 0)
