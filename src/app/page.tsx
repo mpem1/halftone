@@ -614,19 +614,25 @@ export default function HalftoneStudio() {
                   onChange={(v) => set('cell', v)}
                 />
                 <SliderField
-                  label="Mark scale"
+                  label="Mark scale (dot area)"
                   value={params.dotScale}
-                  min={0.2}
-                  max={1.2}
+                  min={0.5}
+                  max={1.5}
                   step={0.02}
                   display={`${Math.round(params.dotScale * 100)}%`}
                   onChange={(v) => set('dotScale', v)}
                 />
+                <p className="text-[10px] leading-relaxed text-zinc-500">
+                  Ranks are calibrated like Photoshop&apos;s screens — at 100% the
+                  inked area of each cell equals the image tone exactly. Dots grow
+                  round, merge into a checkerboard at 50%, then invert.
+                </p>
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
-                    Hard edges (print)
+                    Crisp 1-bit edges (print)
                     <span className="block text-[10px] text-zinc-500">
-                      1-bit marks, no anti-aliasing — like Photoshop bitmap
+                      Hard threshold like Photoshop&apos;s Bitmap → Halftone
+                      Screen. Off = smooth anti-aliased edges.
                     </span>
                   </Label>
                   <Switch

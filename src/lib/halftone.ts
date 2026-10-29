@@ -1,21 +1,30 @@
 /**
  * Halftone Studio — rendering engine.
  *
- * Port of the validated Python pipeline to Canvas2D + typed arrays.
- * Pipeline per screen layer:
- *   1. Adjust the source (tone / saturation / contrast) in image space.
- *   2. Build the ink map (luminance / CMY channel), multiplied by an
- *      analytic validity mask so nothing outside the real image dots.
- *   3. Per-cell average in rotated screen space -> area-proportional mark
- *      size (dot/square/diamond/ellipse radius, or line half-thickness).
- *   4. Analytic per-pixel coverage in screen space (1px AA band, or hard
- *      1-bit when crisp), mapped back to image space by exact inverse
- *      rotation sampling — no canvas resampling anywhere, so mark edges
- *      stay as sharp as the screen grid allows (Photoshop-bitmap style).
- *   5. Composite flat ink or the source artwork itself ("keep art") per
- *      image pixel.
- * CMYK mode renders 4 independently-angled plates (1-bit capable) and
- * multiply-composites them in image space.
+ * Screening method replicates Photoshop's halftone screens as reverse-
+ * engineered from the photocraft project (crates/algo/src/quantize.rs
+ * "to_bitmap Halftone" + crates/algo/src/artistic_fx.rs "HalftonePattern"):
+ *
+ *   1. Tone adjustments (grayscale / saturation / contrast / 1-bit threshold)
+ *      happen FIRST, in image space — before any screening.
+ *   2. The ink map (luminance / CMY channel) is lightly blurred
+ *      (~16% of the cell pitch) so per-pixel screening doesn't alias.
+ *   3. Every pixel is rotated into screen space and evaluated against a
+ *      SPOT FUNCTION in cell-local coordinates. The spot is RANK-CALIBRATED:
+ *      sampling it over a cell and sorting gives the exact threshold for any
+ *      tone, so a 37% gray inks exactly 37% of every cell — dot area is
+ *      proportional to tone, the property that makes halftones print right.
+ *   4. The round-dot spot is the classic cosine screen
+ *      (cos 2πu + cos 2πv)/2: dots grow round, meet at 50% as a checkerboard,
+ *      then invert into round paper holes — no overlapping-clip artifacts.
+ *      Square / diamond / ellipse spots morph the same way via their ranks.
+ *   5. Anti-aliasing is k×k supersampling of the 1-bit threshold (3×3 single,
+ *      2×2 CMYK); "crisp" mode skips it for true 1-bit output like
+ *      Photoshop's Bitmap → Halftone Screen. Line-like screens (lines /
+ *      waves / zigzags) use an exact 1px analytic edge band instead.
+ *   6. Composite flat ink or the source artwork itself ("keep art") per
+ *      image pixel. CMYK mode renders 4 independently-angled plates and
+ *      multiply-composites them.
  */
 
 export type ScreenShape =
@@ -35,7 +44,7 @@ export interface HalftoneParams {
   shape: ScreenShape
   angleDeg: number // 0..180 base screen angle
   cell: number // screen pitch in px (3..24)
-  dotScale: number // 0.2..1.2 mark size factor
+  dotScale: number // 0.5..1.5 mark-area factor (1 = tone-true)
   keepArt: boolean // fill marks with source artwork color (single mode)
   tone: ToneMode // color / continuous grayscale / 1-bit black & white
   threshold: number // 0..1 white cutoff used when tone = 'bw'
@@ -56,7 +65,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   shape: 'dot',
   angleDeg: 45,
   cell: 6,
-  dotScale: 0.62,
+  dotScale: 1,
   keepArt: false,
   tone: 'color',
   threshold: 0.5,
@@ -66,7 +75,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   plateFilter: 'all',
   inkColor: '#000000',
   transparent: false,
-  crisp: true,
+  crisp: false,
   knockout: false,
   knockoutColor: '#ffffff',
   knockoutTolerance: 0.1,
@@ -139,206 +148,218 @@ function adjustImageData(img: ImageData, p: HalftoneParams): void {
   }
 }
 
-interface ScreenAlpha {
-  alpha: Float32Array // (rh, rw) coverage 0..1
-  means: Float32Array // per-cell ink (for line thickness)
-  rows: number
-  cols: number
-  rw: number
-  rh: number
-  cell: number
+/* ------------------------------------------------------------------ */
+/* Screening core                                                      */
+/* ------------------------------------------------------------------ */
+
+/** cos(2π·i/4096) LUT — the round-dot spot needs two per sample. */
+const COS = (() => {
+  const t = new Float32Array(4096)
+  for (let i = 0; i < 4096; i++) t[i] = Math.cos((2 * Math.PI * i) / 4096)
+  return t
+})()
+
+/** Spot value g(u01, v01) in [0..1]-ish: 1 at the cell center (first ink),
+ *  falling to ≤0 at the last inked contour. u01/v01 ∈ [0,1).
+ *  sx = absolute screen x in px (wave phase), cell = pitch in px. */
+function spotValue(
+  shape: ScreenShape,
+  u01: number,
+  v01: number,
+  sx: number,
+  cell: number,
+): number {
+  switch (shape) {
+    case 'dot': {
+      // classic cosine round screen: grows round, checkerboard at 50%,
+      // inverts to round paper holes — photocraft's HalftonePattern dot
+      const c1 = COS[(u01 * 4096) & 4095]
+      const c2 = COS[(v01 * 4096) & 4095]
+      return (2 - c1 - c2) * 0.25
+    }
+    case 'square': {
+      const a = Math.abs(u01 * 2 - 1)
+      const b = Math.abs(v01 * 2 - 1)
+      return 1 - (a > b ? a : b)
+    }
+    case 'diamond': {
+      return 1 - (Math.abs(u01 * 2 - 1) + Math.abs(v01 * 2 - 1)) * 0.5
+    }
+    case 'ellipse': {
+      const a = (u01 * 2 - 1) / 1.55
+      const b = (v01 * 2 - 1) / 1.1
+      return 1 - Math.sqrt(a * a + b * b)
+    }
+    default:
+      return 1
+  }
+}
+
+/** Rank-calibrated thresholds per spot shape, cached: the spot sampled over
+ *  a cell and sorted ascending. For tone t (0..1 ink) the threshold is
+ *  table[(1-t)·(n-1)] — the value whose rank leaves exactly t of the cell
+ *  above it, so inked area == tone (photocraft quantize.rs ranking). */
+const SPOT_RES = 96
+const spotTables = new Map<ScreenShape, Float32Array>()
+function getSpotTable(shape: ScreenShape): Float32Array {
+  let t = spotTables.get(shape)
+  if (!t) {
+    t = new Float32Array(SPOT_RES * SPOT_RES)
+    for (let i = 0; i < t.length; i++) {
+      t[i] = spotValue(
+        shape,
+        ((i % SPOT_RES) + 0.5) / SPOT_RES,
+        (((i / SPOT_RES) | 0) + 0.5) / SPOT_RES,
+        0,
+        8,
+      )
+    }
+    t.sort()
+    spotTables.set(shape, t)
+  }
+  return t
+}
+
+const isLineLike = (shape: ScreenShape) =>
+  shape === 'line' || shape === 'wave' || shape === 'zigzag'
+
+/** Two box-blur passes ≈ gaussian. Keeps per-pixel screening from aliasing
+ *  image detail finer than the screen pitch (photocraft blurs lum by
+ *  cell*0.15 in HalftonePattern). */
+function blurInk(src: Float32Array, w: number, h: number, cell: number): Float32Array {
+  const r = Math.max(1, Math.round(cell * 0.16))
+  let a = src
+  let b = new Float32Array(w * h)
+  for (let pass = 0; pass < 2; pass++) {
+    // horizontal a -> b
+    for (let y = 0; y < h; y++) {
+      const row = y * w
+      let sum = 0
+      for (let k = -r; k <= r; k++) sum += a[row + Math.min(w - 1, Math.max(0, k))]
+      const norm = 1 / (2 * r + 1)
+      for (let x = 0; x < w; x++) {
+        b[row + x] = sum * norm
+        const add = a[row + Math.min(w - 1, x + r + 1)]
+        const sub = a[row + Math.max(0, x - r)]
+        sum += add - sub
+      }
+    }
+    // vertical b -> a
+    for (let x = 0; x < w; x++) {
+      let sum = 0
+      for (let k = -r; k <= r; k++) sum += b[Math.min(h - 1, Math.max(0, k)) * w + x]
+      const norm = 1 / (2 * r + 1)
+      for (let y = 0; y < h; y++) {
+        a[y * w + x] = sum * norm
+        const add = b[Math.min(h - 1, y + r + 1) * w + x]
+        const sub = b[Math.max(0, y - r) * w + x]
+        sum += add - sub
+      }
+    }
+  }
+  return a
 }
 
 /**
- * Build screen-space coverage for one ink layer.
- * inkMap: Float32Array (h*w) of ink amounts 0..1 in IMAGE space.
+ * Per-pixel halftone screen — the heart of the engine.
+ * ink: (w*h) ink amounts 0..1 (already adjusted + blurred).
+ * Returns (w*h) mark coverage 0..1.
  */
-function buildScreenAlpha(
-  inkMap: Float32Array,
+function screenCoverage(
+  ink: Float32Array,
   w: number,
   h: number,
   theta: number,
   cell: number,
-  dotScale: number,
+  markScale: number,
   shape: ScreenShape,
   crisp: boolean,
-): ScreenAlpha {
+  ss: number, // supersampling factor (1 = hard 1-bit at pixel centers)
+): Float32Array {
+  const out = new Float32Array(w * h)
   const ca = Math.cos(theta)
   const sa = Math.sin(theta)
-  const rw = Math.ceil(w * Math.abs(ca) + h * Math.abs(sa)) + 2 * cell
-  const rh = Math.ceil(w * Math.abs(sa) + h * Math.abs(ca)) + 2 * cell
+  const lineLike = isLineLike(shape)
+  const table = lineLike ? null : getSpotTable(shape)
+  const nTab = table ? table.length : 0
+  const half = cell * 0.5
+  const amp = cell * 0.28
+  const ssInv = 1 / ss
+  const lineHalf = lineLike ? half : 0
 
-  // sample ink map into screen space via inverse mapping (exact, no ghosts)
-  const inkS = new Float32Array(rw * rh)
-  for (let y = 0; y < rh; y++) {
-    const dy = y + 0.5 - rh / 2
-    let idx = y * rw
-    for (let x = 0; x < rw; x++) {
-      const dx = x + 0.5 - rw / 2
-      const ox = ca * dx + sa * dy + w / 2
-      const oy = -sa * dx + ca * dy + h / 2
-      if (ox < 0 || oy < 0 || ox >= w || oy >= h) {
-        idx++
+  for (let y = 0; y < h; y++) {
+    const uy = y + 0.5 - h / 2
+    const row = y * w
+    for (let x = 0; x < w; x++) {
+      const t0 = ink[row + x]
+      if (t0 <= 0.004) continue
+      // mark scale: spot shapes scale AREA (t·s²), lines scale thickness
+      const t = lineLike ? t0 * markScale : t0 * markScale * markScale
+      if (t >= 0.996) {
+        out[row + x] = 1
         continue
       }
-      inkS[idx++] = inkMap[(oy | 0) * w + (ox | 0)]
-    }
-  }
+      const tt = t > 1 ? 1 : t
+      // pixel -> screen space (rotation about image center, dot-centered grid)
+      const ux = x + 0.5 - w / 2
+      const rx = ca * ux - sa * uy
+      const ry = sa * ux + ca * uy
 
-  // per-cell means
-  const rows = Math.ceil(rh / cell)
-  const cols = Math.ceil(rw / cell)
-  const means = new Float32Array(rows * cols)
-  for (let cy = 0; cy < rows; cy++) {
-    const y0 = cy * cell
-    const y1 = Math.min(y0 + cell, rh)
-    for (let cx = 0; cx < cols; cx++) {
-      const x0 = cx * cell
-      const x1 = Math.min(x0 + cell, rw)
-      let sum = 0
-      for (let y = y0; y < y1; y++) {
-        const row = y * rw
-        for (let x = x0; x < x1; x++) sum += inkS[row + x]
-      }
-      means[cy * cols + cx] = sum / ((y1 - y0) * (x1 - x0))
-    }
-  }
-
-  // distance-to-own-cell-center LUTs (pixel centers at +0.5)
-  const dxArr = new Float32Array(rw)
-  const dyArr = new Float32Array(rh)
-  for (let x = 0; x < rw; x++) {
-    const c = (((x + 0.5) / cell) | 0) * cell + cell * 0.5
-    dxArr[x] = x + 0.5 - c
-  }
-  for (let y = 0; y < rh; y++) {
-    const c = (((y + 0.5) / cell) | 0) * cell + cell * 0.5
-    dyArr[y] = y + 0.5 - c
-  }
-
-  // per-cell mark size
-  const rCell = new Float32Array(rows * cols)
-  const hCell = new Float32Array(rows * cols) // line half-thickness
-  for (let i = 0; i < means.length; i++) {
-    const m = means[i]
-    if (m <= 0.015) {
-      rCell[i] = -1
-      hCell[i] = -1
-      continue
-    }
-    rCell[i] = cell * Math.sqrt(m) * dotScale
-    hCell[i] = Math.min(cell * 0.5, m * cell * dotScale)
-  }
-
-  // radius lookup per pixel
-  const rMap = new Float32Array(rw * rh)
-  const hMap = new Float32Array(rw * rh)
-  for (let y = 0; y < rh; y++) {
-    const crow = ((y + 0.5) / cell) | 0
-    const mrow = crow * cols
-    let idx = y * rw
-    for (let x = 0; x < rw; x++) {
-      const ci = mrow + (((x + 0.5) / cell) | 0)
-      rMap[idx] = rCell[ci]
-      hMap[idx] = hCell[ci]
-      idx++
-    }
-  }
-
-  // coverage
-  const alpha = new Float32Array(rw * rh)
-  // area-calibration per shape (so equal ink = equal coverage)
-  const shapeFactor =
-    shape === 'diamond'
-      ? 1.25
-      : shape === 'square'
-        ? 0.89
-        : shape === 'ellipse'
-          ? 0.85
-          : 1
-  for (let y = 0; y < rh; y++) {
-    const dy = dyArr[y]
-    let idx = y * rw
-    for (let x = 0; x < rw; x++, idx++) {
-      const r = rMap[idx]
-      if (r < 0) continue
-      const dx = dxArr[x]
-      let d: number
-      switch (shape) {
-        case 'dot':
-          d = Math.sqrt(dx * dx + dy * dy)
-          break
-        case 'square':
-          d = Math.max(Math.abs(dx), Math.abs(dy))
-          break
-        case 'diamond':
-          d = Math.abs(dx) + Math.abs(dy)
-          break
-        case 'ellipse':
-          d = Math.sqrt((dx / 1.7) * (dx / 1.7) + (dy / 0.8) * (dy / 0.8))
-          break
-        case 'line':
-          d = Math.abs(dy)
-          break
-        case 'wave': {
-          // sine row: one period every 2 cells, phase continuous across cells
-          const px = x + 0.5
-          const amp = cell * 0.28
-          d = Math.abs(dy - amp * Math.sin((px * Math.PI) / cell))
-          break
-        }
-        case 'zigzag': {
-          // triangle row: one period every 2 cells
-          const px = x + 0.5
+      if (lineLike) {
+        // rows of constant screen-y; thickness fraction == ink exactly
+        let vy = ry + half
+        vy -= Math.floor(vy / cell) * cell
+        vy -= half
+        let off = 0
+        if (shape === 'wave') {
+          off = amp * Math.sin((rx * Math.PI) / cell)
+        } else if (shape === 'zigzag') {
           const period = cell * 2
-          const t = (px % period) / period
-          const tri = t < 0.5 ? t * 2 : 2 - t * 2
-          d = Math.abs(dy - cell * 0.28 * (tri * 2 - 1))
-          break
+          let q = rx / period
+          q -= Math.floor(q)
+          const tri = q < 0.5 ? q * 2 : 2 - q * 2
+          off = amp * (tri * 2 - 1)
         }
+        const hh = tt * lineHalf
+        const d = vy - off
+        const ad = d < 0 ? -d : d
+        out[row + x] = crisp
+          ? ad <= hh
+            ? 1
+            : 0
+          : ad >= hh + 0.5
+            ? 0
+            : ad <= hh - 0.5
+              ? 1
+              : 0.5 + hh - ad
+        continue
       }
-      const size =
-        shape === 'line' || shape === 'wave' || shape === 'zigzag'
-          ? hMap[idx]
-          : r * shapeFactor
-      const a = 0.5 + size - d
-      // crisp: threshold to 1-bit like a bitmap halftone — prints clean
-      alpha[idx] = crisp ? (a >= 0.5 ? 1 : 0) : a <= 0 ? 0 : a >= 1 ? 1 : a
+
+      // spot shapes: threshold = rank-calibrated spot value for this tone
+      const sStar = table![((1 - tt) * (nTab - 1)) | 0]
+      if (ss <= 1 || crisp) {
+        const u01 = (rx + half) / cell
+        const v01 = (ry + half) / cell
+        const g = spotValue(shape, u01 - Math.floor(u01), v01 - Math.floor(v01), rx, cell)
+        out[row + x] = g > sStar ? 1 : 0
+      } else {
+        let cnt = 0
+        for (let qy = 0; qy < ss; qy++) {
+          const oy = ((qy + 0.5) * ssInv - 0.5)
+          const v01r = (ry + oy + half) / cell
+          const vf = v01r - Math.floor(v01r)
+          for (let qx = 0; qx < ss; qx++) {
+            const ox = ((qx + 0.5) * ssInv - 0.5)
+            const u01r = (rx + ox + half) / cell
+            const uf = u01r - Math.floor(u01r)
+            if (spotValue(shape, uf, vf, rx + ox, cell) > sStar) cnt++
+          }
+        }
+        out[row + x] = cnt / (ss * ss)
+      }
     }
   }
-
-  return { alpha, means, rows, cols, rw, rh, cell }
-}
-
-/** Map screen-space coverage back to image space EXACTLY: every image
- *  pixel center is rotated into the screen grid and the analytic coverage
- *  is nearest-sampled. No canvas resampling pass — a 1px edge stays a 1px
- *  edge instead of being smeared by bilinear interpolation. */
-function coverageToImage(
-  sa: ScreenAlpha,
-  w: number,
-  h: number,
-  theta: number,
-): Float32Array {
-  const ca = Math.cos(theta)
-  const sn = Math.sin(theta)
-  const cov = new Float32Array(w * h)
-  const hw = w / 2
-  const hh = h / 2
-  const hrw = sa.rw / 2
-  const hrh = sa.rh / 2
-  for (let y = 0; y < h; y++) {
-    const uy = y + 0.5 - hh
-    let i = y * w
-    for (let x = 0; x < w; x++, i++) {
-      const ux = x + 0.5 - hw
-      const sx = ca * ux - sn * uy + hrw
-      const sy = sn * ux + ca * uy + hrh
-      if (sx < 0 || sy < 0 || sx >= sa.rw || sy >= sa.rh) continue
-      cov[i] = sa.alpha[(sy | 0) * sa.rw + (sx | 0)]
-    }
-  }
-  return cov
+  return out
 }
 
 /** Mask: 0 where source pixel matches the knockout color, 1 elsewhere.
@@ -359,29 +380,6 @@ function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
     else if (dist < hi) mask[i] = (dist - lo) / (hi - lo)
   }
   return mask
-}
-
-/** Render marks for one plate into an RGBA buffer on paper (multiply-safe). */
-function plateToImageData(
-  sa: ScreenAlpha,
-  inkRgb: [number, number, number],
-  w: number,
-  h: number,
-  theta: number,
-): ImageData {
-  const cov = coverageToImage(sa, w, h, theta)
-  const out = new ImageData(w, h)
-  const od = out.data
-  const [ir, ig, ib] = inkRgb
-  for (let i = 0, j = 0; i < w * h; i++, j += 4) {
-    const a = cov[i]
-    // layer value = 1 - a*(1-ink) per channel (multiply-compositable)
-    od[j] = ((1 - a * (1 - ir)) * 255) | 0
-    od[j + 1] = ((1 - a * (1 - ig)) * 255) | 0
-    od[j + 2] = ((1 - a * (1 - ib)) * 255) | 0
-    od[j + 3] = 255
-  }
-  return out
 }
 
 /** Main entry: render params onto out canvas at source resolution.
@@ -414,40 +412,30 @@ export function renderHalftone(
   adjustImageData(adjId, p)
 
   const theta = (p.angleDeg * Math.PI) / 180
-  const white = document.createElement('canvas')
-  white.width = w
-  white.height = h
-  const whctx = white.getContext('2d')!
-  whctx.fillStyle = '#ffffff'
-  whctx.fillRect(0, 0, w, h)
+  const n = w * h
+  // AA quality: 3×3 for single plate, 2×2 for the 4-plate CMYK workload
+  const ss = p.crisp ? 1 : p.mode === 'cmyk' ? 2 : 3
 
   if (p.mode === 'single') {
     // ink map from adjusted luminance (+ background knockout)
     const d = adjId.data
     const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
-    const inkMap = new Float32Array(w * h)
-    for (let i = 0, j = 0; i < inkMap.length; i++, j += 4) {
+    const inkMap: Float32Array = new Float32Array(n)
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
       const lum = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255
-      inkMap[i] = Math.pow(1 - lum, 1.18) * (mask ? mask[i] : 1)
+      inkMap[i] = (1 - lum) * (mask ? mask[i] : 1)
     }
-    const sa = buildScreenAlpha(
-      inkMap,
-      w,
-      h,
-      theta,
-      p.cell,
-      p.dotScale,
-      p.shape,
-      p.crisp,
+    const blurred = blurInk(inkMap, w, h, p.cell)
+    const cov = screenCoverage(
+      blurred, w, h, theta, p.cell, p.dotScale, p.shape, p.crisp, ss,
     )
 
     if (p.transparent) {
       // true knockout: alpha = ink coverage, straight-alpha RGBA, no paper
-      const cov = coverageToImage(sa, w, h, theta)
       const outId = new ImageData(w, h)
       const od = outId.data
       const [ir, ig, ib] = hexToRgb01(p.inkColor)
-      for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+      for (let i = 0, j = 0; i < n; i++, j += 4) {
         const a = cov[i]
         if (p.keepArt) {
           od[j] = d[j]
@@ -464,14 +452,11 @@ export function renderHalftone(
       return performance.now() - t0
     }
 
-    // composite in image space — coverage is inverse-mapped exactly and art
-    // colors come straight from the adjusted source: zero resampling, so a
-    // mark edge is exactly as sharp as the screen grid defines it
-    const cov = coverageToImage(sa, w, h, theta)
+    // composite in image space: ink color or the adjusted artwork itself
     const outId = new ImageData(w, h)
     const od = outId.data
     const [ir, ig, ib] = hexToRgb01(p.inkColor)
-    for (let i = 0, j = 0; i < w * h; i++, j += 4) {
+    for (let i = 0, j = 0; i < n; i++, j += 4) {
       const a = cov[i]
       let cr: number, cg: number, cb: number
       if (p.keepArt) {
@@ -492,14 +477,13 @@ export function renderHalftone(
   } else {
     // CMYK separation, multiply-composited in image space
     const d = adjId.data
-    const n = w * h
     const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
     const chan: Float32Array[] = [
       new Float32Array(n),
       new Float32Array(n),
       new Float32Array(n),
     ]
-    let maxCh = new Float32Array(n)
+    const maxCh = new Float32Array(n)
     for (let i = 0, j = 0; i < n; i++, j += 4) {
       const r = d[j] / 255
       const g = d[j + 1] / 255
@@ -520,8 +504,7 @@ export function renderHalftone(
           : [p.plateFilter]
 
     // start from paper, multiply each selected plate
-    const acc = whctx.getImageData(0, 0, w, h) // white
-    const ad = acc.data
+    const acc = new Float32Array(n * 3).fill(1)
     // for transparent output: running product of (1 - coverage) per plate
     const invUnion = p.transparent ? new Float32Array(n).fill(1) : null
 
@@ -530,7 +513,7 @@ export function renderHalftone(
       const inkMap = new Float32Array(n)
       for (let i = 0; i < n; i++) {
         if (plate.channel >= 0) {
-          inkMap[i] = Math.pow(1 - chan[plate.channel][i], 1.1) * (mask ? mask[i] : 1)
+          inkMap[i] = (1 - chan[plate.channel][i]) * (mask ? mask[i] : 1)
         } else {
           // full-strength black when tone = 'bw' (kStrength shapes photo K only)
           inkMap[i] =
@@ -539,49 +522,52 @@ export function renderHalftone(
             (mask ? mask[i] : 1)
         }
       }
+      blurInk(inkMap, w, h, p.cell)
       const th = theta + (plate.offset * Math.PI) / 180
-      const sa = buildScreenAlpha(
-        inkMap,
-        w,
-        h,
-        th,
-        p.cell,
-        p.dotScale,
-        p.shape,
-        p.crisp,
+      const cov = screenCoverage(
+        inkMap, w, h, th, p.cell, p.dotScale, p.shape, p.crisp, ss,
       )
       if (invUnion) {
-        const cov = coverageToImage(sa, w, h, th)
         for (let i = 0; i < n; i++) invUnion[i] *= 1 - cov[i]
       }
-      const layer = plateToImageData(sa, plate.rgb as [number, number, number], w, h, th)
-      const ld = layer.data
-      for (let j = 0; j < ad.length; j += 4) {
-        ad[j] = (ad[j] * ld[j]) / 255
-        ad[j + 1] = (ad[j + 1] * ld[j + 1]) / 255
-        ad[j + 2] = (ad[j + 2] * ld[j + 2]) / 255
+      // multiply-composite this plate's layer (1 - a·(1-ink)) into acc
+      const [pr, pg, pb] = plate.rgb
+      for (let i = 0, j = 0; i < n; i++, j += 3) {
+        const a = cov[i]
+        acc[j] *= 1 - a * (1 - pr)
+        acc[j + 1] *= 1 - a * (1 - pg)
+        acc[j + 2] *= 1 - a * (1 - pb)
       }
     }
 
+    const outId = new ImageData(w, h)
+    const od = outId.data
     if (invUnion) {
       // straight-alpha assembly: union coverage as alpha, ink color unmixed
       // from the white-paper composite so it reads correctly on any backdrop
-      for (let i = 0, j = 0; i < n; i++, j += 4) {
+      for (let i = 0, j = 0, q = 0; i < n; i++, j += 4, q += 3) {
         const a = 1 - invUnion[i]
         if (a > 0) {
           for (let c = 0; c < 3; c++) {
-            const v = (ad[j + c] / 255 - (1 - a)) / a
-            ad[j + c] = Math.min(255, Math.max(0, v * 255)) | 0
+            const v = (acc[q + c] - (1 - a)) / a
+            od[j + c] = Math.min(255, Math.max(0, v * 255)) | 0
           }
         } else {
-          ad[j] = 0
-          ad[j + 1] = 0
-          ad[j + 2] = 0
+          od[j] = 0
+          od[j + 1] = 0
+          od[j + 2] = 0
         }
-        ad[j + 3] = (a * 255) | 0
+        od[j + 3] = (a * 255) | 0
+      }
+    } else {
+      for (let i = 0, j = 0, q = 0; i < n; i++, j += 4, q += 3) {
+        od[j] = (acc[q] * 255) | 0
+        od[j + 1] = (acc[q + 1] * 255) | 0
+        od[j + 2] = (acc[q + 2] * 255) | 0
+        od[j + 3] = 255
       }
     }
-    octx.putImageData(acc, 0, 0)
+    octx.putImageData(outId, 0, 0)
   }
 
   return performance.now() - t0
