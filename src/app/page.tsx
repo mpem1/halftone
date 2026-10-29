@@ -284,7 +284,13 @@ export default function HalftoneStudio() {
       bctx.imageSmoothingQuality = 'high'
       bctx.drawImage(img, 0, 0, w, h)
       const out = document.createElement('canvas')
-      renderHalftone(big, out, params)
+      // keep the SAME screen ruling as the preview: the cell pitch scales
+      // with the resolution jump, so dots per image width stay identical
+      // (same LPI, higher DPI) and the export matches what was on screen.
+      const workMax = params.mode === 'cmyk' ? 1400 : MAX_WORK
+      const workScale = Math.min(1, workMax / Math.max(img.naturalWidth, img.naturalHeight))
+      const workW = Math.max(2, Math.round(img.naturalWidth * workScale))
+      renderHalftone(big, out, params, undefined, w / workW)
       const blob = await new Promise<Blob | null>((res) => out.toBlob(res, 'image/png'))
       if (blob) {
         const a = document.createElement('a')
@@ -775,14 +781,14 @@ export default function HalftoneStudio() {
                 </div>
                 <p className="text-xs leading-relaxed text-zinc-500">
                   {params.tone === 'bw'
-                    ? 'True 1-bit black & white — every pixel is pushed to pure black or pure white at the threshold. No grays survive, even inside the marks.'
+                    ? "Bitmap mode, like Photoshop's Bitmap → Halftone Screen: the photo keeps its full tone range, the screen turns it into pure 1-bit dots — no gray pixels. The Level slider weighs the output darker or lighter."
                     : params.tone === 'gray'
                       ? 'Continuous grayscale — smooth tones that drive the halftone shades.'
                       : 'Full color — saturation and contrast apply before screening.'}
                 </p>
                 {params.tone === 'bw' && (
                   <SliderField
-                    label="Threshold"
+                    label="Level (exposure pivot)"
                     value={params.threshold}
                     min={0}
                     max={1}

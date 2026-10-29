@@ -5,8 +5,11 @@
  * engineered from the photocraft project (crates/algo/src/quantize.rs
  * "to_bitmap Halftone" + crates/algo/src/artistic_fx.rs "HalftonePattern"):
  *
- *   1. Tone adjustments (grayscale / saturation / contrast / 1-bit threshold)
- *      happen FIRST, in image space — before any screening.
+ *   1. Tone adjustments (grayscale / saturation / contrast / B&W pivot)
+ *      happen FIRST, in image space — before any screening. The source is
+ *      NEVER binarized here: thresholding it would erase every midtone,
+ *      and the screen of a binary image is just solid blobs with dithered
+ *      edges — no dot grid left. B&W's 1-bit look comes from the screen.
  *   2. The ink map (luminance / CMY channel) is lightly blurred
  *      (~16% of the cell pitch) so per-pixel screening doesn't alias.
  *   3. Every pixel is rotated into screen space and evaluated against a
@@ -47,7 +50,7 @@ export interface HalftoneParams {
   dotScale: number // 0.5..1.5 mark-area factor (1 = tone-true)
   keepArt: boolean // fill marks with source artwork color (single mode)
   tone: ToneMode // color / continuous grayscale / 1-bit black & white
-  threshold: number // 0..1 white cutoff used when tone = 'bw'
+  threshold: number // 0..1 B&W brightness pivot (0.5 neutral) — never binarizes the source
   saturation: number // -1..1 (0 = unchanged, applies to tone 'color')
   contrast: number // -1..1 (0 = unchanged)
   kStrength: number // 0..1 black-plate strength in CMYK mode
@@ -64,7 +67,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   mode: 'single',
   shape: 'dot',
   angleDeg: 45,
-  cell: 6,
+  cell: 10,
   dotScale: 1,
   keepArt: false,
   tone: 'color',
@@ -75,7 +78,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   plateFilter: 'all',
   inkColor: '#000000',
   transparent: false,
-  crisp: false,
+  crisp: true,
   knockout: false,
   knockoutColor: '#ffffff',
   knockoutTolerance: 0.1,
@@ -110,13 +113,17 @@ function hexToRgb01(hex: string): [number, number, number] {
 
 /** Apply tone + saturation / contrast to an ImageData in place.
  *  tone 'gray' desaturates to continuous luminance (real grays survive).
- *  tone 'bw' is TRUE black & white: the contrasted gray is thresholded at
- *  p.threshold so every pixel ends up pure #000 or #fff — no grays. */
-function adjustImageData(img: ImageData, p: HalftoneParams): void {
+ *  tone 'bw' ALSO keeps the continuous tone: the 1-bit look must come from
+ *  the screen itself (hard-edged dots), never from thresholding the source.
+ *  A binarized image has no midtones, and screening it yields solid blobs
+ *  with dithered edges instead of a dot grid. p.threshold is therefore a
+ *  brightness pivot (0.5 = neutral, up to ±0.6) that shifts the tone so
+ *  users can weigh the output darker or lighter — dots survive at any
+ *  setting, exactly like weighing exposure before screening in a print shop. */
+export function adjustImageData(img: ImageData, p: HalftoneParams): void {
   const sat = p.tone === 'color' ? 1 + p.saturation : 0
   const con = 1 + p.contrast
-  const binarize = p.tone === 'bw'
-  const thr = p.threshold
+  const shift = p.tone === 'bw' ? (p.threshold - 0.5) * 1.2 : 0
   const d = img.data
   for (let i = 0; i < d.length; i += 4) {
     let r = d[i] / 255
@@ -133,17 +140,14 @@ function adjustImageData(img: ImageData, p: HalftoneParams): void {
       g = (g - 0.5) * con + 0.5
       b = (b - 0.5) * con + 0.5
     }
-    if (binarize) {
-      // after desaturation all channels carry the same gray value
-      const v = g >= thr ? 255 : 0
-      d[i] = v
-      d[i + 1] = v
-      d[i + 2] = v
-    } else {
-      d[i] = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
-      d[i + 1] = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
-      d[i + 2] = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
+    if (shift !== 0) {
+      r += shift
+      g += shift
+      b += shift
     }
+    d[i] = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
+    d[i + 1] = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
+    d[i + 2] = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
     d[i + 3] = 255
   }
 }
@@ -226,7 +230,7 @@ const isLineLike = (shape: ScreenShape) =>
 /** Two box-blur passes ≈ gaussian. Keeps per-pixel screening from aliasing
  *  image detail finer than the screen pitch (photocraft blurs lum by
  *  cell*0.15 in HalftonePattern). */
-function blurInk(src: Float32Array, w: number, h: number, cell: number): Float32Array {
+export function blurInk(src: Float32Array, w: number, h: number, cell: number): Float32Array {
   const r = Math.max(1, Math.round(cell * 0.16))
   let a = src
   let b = new Float32Array(w * h)
@@ -265,7 +269,7 @@ function blurInk(src: Float32Array, w: number, h: number, cell: number): Float32
  * ink: (w*h) ink amounts 0..1 (already adjusted + blurred).
  * Returns (w*h) mark coverage 0..1.
  */
-function screenCoverage(
+export function screenCoverage(
   ink: Float32Array,
   w: number,
   h: number,
@@ -383,12 +387,16 @@ function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
 }
 
 /** Main entry: render params onto out canvas at source resolution.
- *  maxDim: optional working-resolution cap for fast interactive previews. */
+ *  maxDim: optional working-resolution cap for fast interactive previews.
+ *  cellScale: multiplies the screen pitch — pass outWidth/previewWidth when
+ *  rendering the same view at a higher resolution so the printed ruling
+ *  (dots per image width) stays IDENTICAL to the preview. */
 export function renderHalftone(
   src: HTMLCanvasElement,
   out: HTMLCanvasElement,
   p: HalftoneParams,
   maxDim?: number,
+  cellScale = 1,
 ): number {
   const t0 = performance.now()
   if (maxDim && Math.max(src.width, src.height) > maxDim) {
@@ -412,9 +420,13 @@ export function renderHalftone(
   adjustImageData(adjId, p)
 
   const theta = (p.angleDeg * Math.PI) / 180
+  const cell = Math.max(2, p.cell * cellScale)
   const n = w * h
+  // B&W is a bitmap mode: like Photoshop's Bitmap → Halftone Screen the
+  // output is strictly 1-bit, so marks are always rendered hard-edged.
+  const crisp = p.crisp || p.tone === 'bw'
   // AA quality: 3×3 for single plate, 2×2 for the 4-plate CMYK workload
-  const ss = p.crisp ? 1 : p.mode === 'cmyk' ? 2 : 3
+  const ss = crisp ? 1 : p.mode === 'cmyk' ? 2 : 3
 
   if (p.mode === 'single') {
     // ink map from adjusted luminance (+ background knockout)
@@ -425,9 +437,9 @@ export function renderHalftone(
       const lum = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255
       inkMap[i] = (1 - lum) * (mask ? mask[i] : 1)
     }
-    const blurred = blurInk(inkMap, w, h, p.cell)
+    const blurred = blurInk(inkMap, w, h, cell)
     const cov = screenCoverage(
-      blurred, w, h, theta, p.cell, p.dotScale, p.shape, p.crisp, ss,
+      blurred, w, h, theta, cell, p.dotScale, p.shape, crisp, ss,
     )
 
     if (p.transparent) {
@@ -522,10 +534,10 @@ export function renderHalftone(
             (mask ? mask[i] : 1)
         }
       }
-      blurInk(inkMap, w, h, p.cell)
+      blurInk(inkMap, w, h, cell)
       const th = theta + (plate.offset * Math.PI) / 180
       const cov = screenCoverage(
-        inkMap, w, h, th, p.cell, p.dotScale, p.shape, p.crisp, ss,
+        inkMap, w, h, th, cell, p.dotScale, p.shape, crisp, ss,
       )
       if (invUnion) {
         for (let i = 0; i < n; i++) invUnion[i] *= 1 - cov[i]
