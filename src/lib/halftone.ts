@@ -31,7 +31,13 @@
  *      2×2 CMYK); "crisp" mode skips it for true 1-bit output like
  *      Photoshop's Bitmap → Halftone Screen. Line-like screens (lines /
  *      waves / zigzags) use an exact 1px analytic edge band instead.
- *   6. Composite flat ink or the source artwork itself ("keep art") per
+ *   6. Line-like bands SEAL into solid once the paper gap between
+ *      neighbouring lines drops below lineSeal() (~10% of the pitch): a
+ *      sub-pixel gap renders as a dirty hairline (phase-dependent dotted
+ *      white rows in 1-bit output; permanent AA seams in the vector), not a
+ *      tone. The SVG exporter applies the identical rule so preview and
+ *      vector agree — dark areas read solid instead of striped.
+ *   7. Composite flat ink or the source artwork itself ("keep art") per
  *      image pixel. CMYK mode renders 4 independently-angled plates and
  *      multiply-composites them.
  */
@@ -304,6 +310,18 @@ function getSpotTable(shape: ScreenShape): Float32Array {
 const isLineLike = (shape: ScreenShape) =>
   shape === 'line' || shape === 'wave' || shape === 'zigzag'
 
+/** Paper-gap seal for line-like screens: once the white gap between
+ *  neighbouring lines drops below this length (px), the eye reads it as a
+ *  dirty hairline rather than a tone — 1-bit sampling renders it as
+ *  phase-dependent dotted white rows, and vector anti-aliasing leaves a
+ *  permanent light seam between strips that merely abut. Both the raster
+ *  screener and the SVG exporter merge the bands to solid at the SAME
+ *  threshold (a fraction of the pitch, so preview and export agree at any
+ *  resolution) — dark areas read solid instead of striped. */
+export function lineSeal(cell: number): number {
+  return Math.max(0.5, cell * 0.1)
+}
+
 /** Rank-calibrated threshold for tone t (0..1): the spot value whose
  *  contour leaves exactly t of every cell inked. Shared by the raster
  *  screener AND the SVG exporter so both produce identical geometry. */
@@ -410,6 +428,13 @@ export function screenCoverage(
           off = amp * (tri * 2 - 1)
         }
         const hh = tt * lineHalf
+        // near-solid seal: merge the band into solid once the paper gap to
+        // the neighbouring lines hits the seal threshold — identical rule in
+        // the SVG exporter (lineSeal), so preview and vector stay identical
+        if (cell - hh * 2 <= lineSeal(cell)) {
+          out[row + x] = 1
+          continue
+        }
         const d = vy - off
         const ad = d < 0 ? -d : d
         out[row + x] = crisp

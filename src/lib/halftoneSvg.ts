@@ -12,7 +12,13 @@
  *
  * Line-like screens (line / wave / zigzag) become polygon strips: the
  * centerline follows the same wave / zigzag formula as the raster and the
- * thickness profile is sampled from the same blurred ink map.
+ * thickness profile is sampled from the same blurred ink map. Neighbouring
+ * strips whose paper gap drops below lineSeal() are sealed with a small
+ * same-color overlap — strips that merely ABUT leave a permanent light seam
+ * between them once any renderer anti-aliases the shared edge, which is why
+ * solid-black areas used to show a white line between every line. The seal
+ * threshold is a fraction of the cell pitch, identical to the raster
+ * screener's, so preview and vector agree at any resolution.
  *
  * CMYK exports as four independently-angled plate groups composited with
  * multiply blending — the same rosette (or uniform) angles as the raster.
@@ -24,6 +30,7 @@ import {
   adjustImageData,
   blurInk,
   buildKnockoutMask,
+  lineSeal,
   PLATES,
   spotThreshold,
   type HalftoneParams,
@@ -177,22 +184,60 @@ function plateMarks(
   const zs = shape === 'zigzag' ? Math.ceil(x0 / step) * step : x0
   const ze = shape === 'zigzag' ? Math.floor(x1 / step) * step : x1
   const count = Math.max(2, Math.ceil((ze - zs) / step))
+
+  // pass 1: half-thickness per row per sample (ink at each row's centerline)
+  const cols = count + 1
+  const nrows = mMax - mMin + 1
+  const hhMap = new Float32Array(nrows * cols)
   for (let m = mMin; m <= mMax; m++) {
     const ry = m * cell
-    const top: string[] = []
-    const bot: string[] = []
-    let any = false
-    for (let i = 0; i <= count; i++) {
+    const base = (m - mMin) * cols
+    for (let i = 0; i < cols; i++) {
       const rx = zs + i * step
       const off = lineOffset(shape, rx, cell)
       const yc = ry + off
       const ix = ca * rx + sa * yc + w / 2 - 0.5
       const iy = -sa * rx + ca * yc + h / 2 - 0.5
       const t0 = sample(ink, w, h, ix, iy)
-      const hh = Math.min(1, t0 * ms) * half
+      hhMap[base + i] = Math.min(1, t0 * ms) * half
+    }
+  }
+
+  // pass 2: build the strips. Wherever the paper gap to a neighbour drops
+  // below the seal threshold (near-solid tones), extend BOTH strips toward
+  // each other so they OVERLAP by exactly the seal length: strips that only
+  // abut leave a light anti-aliasing seam between them at every render
+  // resolution — the white line between lines the tool used to show even at
+  // solid black. Same-color overlap composites to full coverage instead.
+  const SEAL = lineSeal(cell)
+  for (let m = mMin; m <= mMax; m++) {
+    const ry = m * cell
+    const base = (m - mMin) * cols
+    const up = m > mMin ? base - cols : -1
+    const dn = m < mMax ? base + cols : -1
+    const top: string[] = []
+    const bot: string[] = []
+    let any = false
+    for (let i = 0; i < cols; i++) {
+      const rx = zs + i * step
+      const off = lineOffset(shape, rx, cell)
+      const yc = ry + off
+      const hh = hhMap[base + i]
+      let extT = 0
+      let extB = 0
+      if (hh > 0) {
+        if (up >= 0) {
+          const g = cell - hh - hhMap[up + i]
+          if (g <= SEAL) extT = g / 2 + SEAL / 2
+        }
+        if (dn >= 0) {
+          const g = cell - hh - hhMap[dn + i]
+          if (g <= SEAL) extB = g / 2 + SEAL / 2
+        }
+      }
       if (hh > 0.02) any = true
-      top.push(`${n2(rx)},${n2(yc - hh)}`)
-      bot.push(`${n2(rx)},${n2(yc + hh)}`)
+      top.push(`${n2(rx)},${n2(yc - hh - extT)}`)
+      bot.push(`${n2(rx)},${n2(yc + hh + extB)}`)
     }
     if (!any) continue
     bot.reverse()
