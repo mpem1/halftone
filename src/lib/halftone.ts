@@ -45,6 +45,16 @@
  *   7. Composite flat ink or the source artwork itself ("keep art") per
  *      image pixel. CMYK mode renders 4 independently-angled plates and
  *      multiply-composites them.
+ *   8. ZEBRA FLOW (ZebraTrace-style engraving): a family of curves whose
+ *      stroke width is modulated by image darkness — halfWidth =
+ *      pitch/2·(wMin + k·(wMax−wMin)), ZebraTrace's traced-line formula.
+ *      With wMax = 1 the average inked fraction equals the image tone, the
+ *      same rank-calibration property as the spot screens. Five families
+ *      (waves / lines / rings / spiral / rays) flow at the screen angle;
+ *      near-solid strokes widen past their touching width (ZEBRA_SEAL_K)
+ *      so neighbours overlap and AA can never leave seams. Both engines
+ *      share zebraRibbons() — the SVG exporter emits the same nodes as
+ *      filled ribbon polygons.
  */
 
 export type ScreenShape =
@@ -55,6 +65,13 @@ export type ScreenShape =
   | 'line'
   | 'wave'
   | 'zigzag'
+  | 'zebra'
+
+/** Zebra-flow curve families (ZebraTrace-style engraving screens).
+ *  Unlike the cell screens these are curve families whose stroke width is
+ *  modulated by image darkness — the family style only changes how the
+ *  curves flow across the picture. */
+export type ZebraStyle = 'waves' | 'lines' | 'rings' | 'spiral' | 'rays'
 export type OutputMode = 'single' | 'cmyk'
 export type PlateFilter = 'all' | 'C' | 'M' | 'Y' | 'K'
 export type ToneMode = 'color' | 'gray' | 'bw'
@@ -86,6 +103,10 @@ export interface HalftoneParams {
   knockout: boolean // remove background-colored source areas before screening
   knockoutColor: string // hex, background color to remove
   knockoutTolerance: number // 0..0.35 how far from knockoutColor still counts
+  zebraStyle: ZebraStyle // zebra shape: how the curves flow across the image
+  zebraWidthMax: number // stroke width at solid black, × cell pitch (1 = tone-true)
+  zebraWidthMin: number // stroke width at white, × cell pitch (hairline keeps curves visible)
+  zebraFlow: number // 0..1.2 curve meander amplitude, × cell pitch
 }
 
 export const DEFAULT_PARAMS: HalftoneParams = {
@@ -115,6 +136,10 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   knockout: false,
   knockoutColor: '#ffffff',
   knockoutTolerance: 0.1,
+  zebraStyle: 'waves',
+  zebraWidthMax: 1,
+  zebraWidthMin: 0.03,
+  zebraFlow: 0.7,
 }
 
 export const SHAPE_LABELS: Record<ScreenShape, string> = {
@@ -125,6 +150,15 @@ export const SHAPE_LABELS: Record<ScreenShape, string> = {
   line: 'Lines',
   wave: 'Waves',
   zigzag: 'Zigzags',
+  zebra: 'Zebra flow',
+}
+
+export const ZEBRA_STYLE_LABELS: Record<ZebraStyle, string> = {
+  waves: 'Waves',
+  lines: 'Lines',
+  rings: 'Rings',
+  spiral: 'Spiral',
+  rays: 'Rays',
 }
 
 /** CMYK plate definitions: ink rgb (0..1) + screen angle offset.
@@ -529,6 +563,315 @@ export function screenCoverage(
   return out
 }
 
+/* ------------------------------------------------------------------ */
+/* Zebra flow — ZebraTrace-style engraving screens                     */
+/* ------------------------------------------------------------------ */
+
+/** One variable-width stroke: a polyline (image-space points) plus the
+ *  half-width at every node. `closed` marks looping families (rings).
+ *  The SVG exporter emits the SAME nodes as filled ribbon polygons, so
+ *  preview and vector share geometry exactly like the cell screens. */
+export interface ZebraRibbon {
+  pts: Float32Array // xy pairs along the centerline
+  hw: Float32Array // stroke half-width at each node (px)
+  closed: boolean
+}
+
+/** Near-solid seal for zebra strokes: once local darkness passes this the
+ *  stroke widens past its touching width so same-tone neighbours OVERLAP
+ *  by a few percent instead of merely abutting. Abutting same-color edges
+ *  leave a permanent anti-aliasing seam between them (the white line
+ *  between lines bug — same cure as lineSeal, but driven by tone instead
+ *  of pitch, because zebra neighbour distance depends on the image). */
+export const ZEBRA_SEAL_K = 0.92
+
+/**
+ * Build the zebra curve family for an ink map. Geometry lives in IMAGE
+ * space — the screen angle is baked into the curve directions, so the
+ * SVG exporter can emit these paths without a rotation transform.
+ *
+ * Tone encoding follows ZebraTrace's traced lines exactly:
+ *   halfWidth = pitch/2 · (wMin + k·(wMax − wMin)),  k = darkness
+ * so with wMin→0 / wMax = 1 the average inked fraction along a row equals
+ * the image tone — the same rank-calibration property as the spot screens.
+ * Near-solid tones (k ≥ ZEBRA_SEAL_K) widen past the touching width so
+ * neighbouring strokes overlap and anti-aliasing can never leave seams.
+ */
+export function zebraRibbons(
+  ink: Float32Array,
+  w: number,
+  h: number,
+  cell: number,
+  style: ZebraStyle,
+  widthMax: number,
+  widthMin: number,
+  flow: number,
+  theta: number,
+  markScale: number,
+): ZebraRibbon[] {
+  const ribbons: ZebraRibbon[] = []
+  const cx = w / 2
+  const cy = h / 2
+  const R = Math.sqrt(cx * cx + cy * cy) // half-diagonal — every family spans it
+
+  const push = (xs: number[], ys: number[], closed: boolean, scale?: Float32Array, seal?: Float32Array) => {
+    const n = xs.length
+    if (n < 2) return
+    const pts = new Float32Array(n * 2)
+    const hw = new Float32Array(n)
+    for (let i = 0; i < n; i++) {
+      const x = xs[i]
+      const y = ys[i]
+      pts[i * 2] = x
+      pts[i * 2 + 1] = y
+      // `scale` lets a family modulate the LOCAL neighbour distance (rays:
+      // arc gap grows with radius) so width/distance stays tone-true;
+      // `seal` may widen just the near-solid branch to the WORST-side gap
+      // so the seal bridges the widest paper channel without biasing tone
+      const sc = scale ? scale[i] : 1
+      const k = Math.min(1, sampleMap(ink, w, h, x, y) * markScale)
+      if (k < 0.004) {
+        hw[i] = 0
+      } else if (k >= ZEBRA_SEAL_K) {
+        hw[i] = cell * 0.5 * (seal ? seal[i] : sc) * Math.max(widthMax, 1.06)
+      } else {
+        hw[i] = cell * 0.5 * sc * (widthMin + k * (widthMax - widthMin))
+      }
+    }
+    ribbons.push({ pts, hw, closed })
+  }
+
+  if (style === 'waves' || style === 'lines') {
+    // rows of curves running along the screen angle, spaced one pitch apart.
+    // ZebraTrace's wave presets undulate IN PHASE (cos(a·13)/30 — no i term):
+    // parallel flowing curves keep their separation, so the amplitude can
+    // safely reach a full pitch without rows ever crossing
+    const dirX = Math.cos(theta)
+    const dirY = Math.sin(theta)
+    const nrmX = -dirY
+    const nrmY = dirX
+    const J = Math.ceil(R / cell) + 1
+    const amp = style === 'waves' ? Math.min(flow, 1.2) * 0.9 * cell : 0
+    const step = style === 'waves' ? cell / 6 : cell / 3
+    const xs: number[] = []
+    const ys: number[] = []
+    for (let j = -J; j <= J; j++) {
+      xs.length = 0
+      ys.length = 0
+      const ox = cx + nrmX * (j * cell)
+      const oy = cy + nrmY * (j * cell)
+      // slight per-row phase drift keeps the flow organic without crossing
+      const phase = j * 0.35
+      for (let s = -R; s <= R; s += step) {
+        let x = ox + dirX * s
+        let y = oy + dirY * s
+        if (amp > 0) {
+          const off = amp * Math.sin((s * 2 * Math.PI) / (cell * 13) + phase)
+          x += nrmX * off
+          y += nrmY * off
+        }
+        xs.push(x)
+        ys.push(y)
+      }
+      push(xs, ys, false)
+    }
+  } else if (style === 'rings') {
+    // concentric guilloché circles around the image center; a gentle radial
+    // wobble (phase-shifting per ring) keeps them organic, never crossing
+    const wob = Math.min(flow, 1.2) * 0.3 * cell
+    const J = Math.ceil(R / cell)
+    for (let j = 1; j <= J; j++) {
+      const r0 = j * cell
+      const dPhi = Math.max(1.2, cell / 6) / r0
+      const xs: number[] = []
+      const ys: number[] = []
+      for (let phi = 0; phi < 2 * Math.PI; phi += dPhi) {
+        const r = r0 + (wob > 0 ? wob * Math.sin(6 * phi + j * 1.7) : 0)
+        xs.push(cx + r * Math.cos(phi))
+        ys.push(cy + r * Math.sin(phi))
+      }
+      push(xs, ys, true)
+    }
+  } else if (style === 'spiral') {
+    // one Archimedean spiral: one pitch per turn, from the center out
+    const wob = Math.min(flow, 1.2) * 0.2 * cell
+    const step = Math.max(1.2, cell / 6)
+    const xs: number[] = []
+    const ys: number[] = []
+    // half-twist start so the innermost step is finite; anchor the center
+    let phi = Math.PI / 4
+    xs.push(cx)
+    ys.push(cy)
+    for (;;) {
+      let r = (cell * phi) / (2 * Math.PI)
+      if (wob > 0) r += wob * Math.sin(0.5 * phi)
+      if (r > R) break
+      xs.push(cx + r * Math.cos(phi))
+      ys.push(cy + r * Math.sin(phi))
+      phi += step / Math.max(r, 0.5)
+    }
+    push(xs, ys, false)
+  } else {
+    // rays: a fan of straight strokes through an EXTERNAL vanishing point.
+    // Center-converging spokes can't be tone-true (neighbour arc gap ∝
+    // radius collapses to zero at the pivot — strokes thin to stipple) or
+    // printable (uncompensated, the interior over-inks 2×). A pivot at
+    // D = 2.5·R keeps the arc gap within ±40% of the pitch across the whole
+    // image, and each stroke's width still scales with its LOCAL gap, so
+    // ink fraction == tone everywhere while the curves stay visible
+    const D = 2.5 * R
+    const px = cx + Math.cos(theta + Math.PI / 2) * D
+    const py = cy + Math.sin(theta + Math.PI / 2) * D
+    const N = Math.max(12, Math.round((2 * Math.PI * D) / cell))
+    const wob = Math.min(flow, 1.2) * 0.3
+    const step = cell / 3
+    const cnt = Math.ceil((D + R) / step) + 1
+    const scale = new Float32Array(cnt)
+    const seal = new Float32Array(cnt)
+    for (let j = 0; j < N; j++) {
+      const a = theta + (j * 2 * Math.PI) / N
+      const xs: number[] = []
+      const ys: number[] = []
+      for (let i = 0; i < cnt; i++) {
+        const d = i * step
+        // tone width follows the IDEAL arc gap (d·2π/N — wobble averages
+        // out); the seal follows the gap to the WIDEST side, wobble
+        // included, so it bridges the worst paper channel without biasing
+        // midtone ink
+        const F = (d / cell) * 0.9
+        const wA = (wob * cell) / Math.max(d, cell)
+        const s0 = wob > 0 ? Math.sin(F + j * 2.1) : 0
+        const sUp = wob > 0 ? Math.sin(F + (j + 1) * 2.1) : 0
+        const sDn = wob > 0 ? Math.sin(F + (j - 1) * 2.1) : 0
+        const gapUp = d * (2 * Math.PI / N + (sUp - s0) * wA)
+        const gapDn = d * (2 * Math.PI / N + (s0 - sDn) * wA)
+        scale[i] = Math.max(0.02, ((d * 2 * Math.PI) / N) / cell)
+        seal[i] = Math.max(0.02, Math.max(gapUp, gapDn) / cell)
+        // angular wobble amplitude ∝ 1/d so the TANGENTIAL displacement
+        // stays a constant fraction of the pitch — constant radians would
+        // swing the far end by hundreds of px and rays would cross
+        const aa = a + (wob > 0 ? wA * s0 : 0)
+        xs.push(px + d * Math.cos(aa))
+        ys.push(py + d * Math.sin(aa))
+      }
+      push(xs, ys, false, scale, seal)
+    }
+  }
+  return ribbons
+}
+
+/**
+ * Rasterize zebra ribbons into the coverage buffer (union — strokes may
+ * overlap freely). Each segment becomes two triangles; crisp mode tests
+ * pixel centers (1-bit like the cell screens), smooth mode averages a
+ * 3×3 subsample grid for anti-aliased edges.
+ */
+export function rasterizeZebra(
+  ribbons: ZebraRibbon[],
+  w: number,
+  h: number,
+  crisp: boolean,
+): Float32Array {
+  const out = new Float32Array(w * h)
+
+  const tri = (
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+    cx: number,
+    cy: number,
+  ) => {
+    const minx = Math.max(0, Math.floor(Math.min(ax, bx, cx)))
+    const maxx = Math.min(w - 1, Math.ceil(Math.max(ax, bx, cx)))
+    if (minx > maxx) return
+    const miny = Math.max(0, Math.floor(Math.min(ay, by, cy)))
+    const maxy = Math.min(h - 1, Math.ceil(Math.max(ay, by, cy)))
+    if (miny > maxy) return
+    const area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+    if (area === 0) return
+    const pos = area > 0
+    if (crisp) {
+      for (let y = miny; y <= maxy; y++) {
+        const py = y + 0.5
+        const row = y * w
+        for (let x = minx; x <= maxx; x++) {
+          const px = x + 0.5
+          const e1 = (bx - ax) * (py - ay) - (by - ay) * (px - ax)
+          if (e1 > 0 !== pos && e1 !== 0) continue
+          const e2 = (cx - bx) * (py - by) - (cy - by) * (px - bx)
+          if (e2 > 0 !== pos && e2 !== 0) continue
+          const e3 = (ax - cx) * (py - cy) - (ay - cy) * (px - cx)
+          if (e3 > 0 !== pos && e3 !== 0) continue
+          out[row + x] = 1
+        }
+      }
+    } else {
+      const e1x = bx - ax
+      const e1y = by - ay
+      const e2x = cx - bx
+      const e2y = cy - by
+      const e3x = ax - cx
+      const e3y = ay - cy
+      for (let y = miny; y <= maxy; y++) {
+        const row = y * w
+        for (let x = minx; x <= maxx; x++) {
+          let cnt = 0
+          for (let q = 0; q < 9; q++) {
+            const px = x + ((q % 3) + 0.5) / 3
+            const py = y + (((q / 3) | 0) + 0.5) / 3
+            let e = e1x * (py - ay) - e1y * (px - ax)
+            if (e > 0 !== pos && e !== 0) continue
+            e = e2x * (py - by) - e2y * (px - bx)
+            if (e > 0 !== pos && e !== 0) continue
+            e = e3x * (py - cy) - e3y * (px - cx)
+            if (e > 0 !== pos && e !== 0) continue
+            cnt++
+          }
+          const c = cnt / 9
+          if (c > out[row + x]) out[row + x] = c
+        }
+      }
+    }
+  }
+
+  for (const rb of ribbons) {
+    const { pts, hw, closed } = rb
+    const n = hw.length
+    const segs = closed ? n : n - 1
+    for (let i = 0; i < segs; i++) {
+      const j = (i + 1) % n
+      const hw0 = hw[i]
+      const hw1 = hw[j]
+      if (hw0 <= 0.01 && hw1 <= 0.01) continue
+      let tx = pts[j * 2] - pts[i * 2]
+      let ty = pts[j * 2 + 1] - pts[i * 2 + 1]
+      const tl = Math.sqrt(tx * tx + ty * ty)
+      if (tl < 1e-6) continue
+      tx /= tl
+      ty /= tl
+      const nx = -ty
+      const ny = tx
+      const x0 = pts[i * 2]
+      const y0 = pts[i * 2 + 1]
+      const x1 = pts[j * 2]
+      const y1 = pts[j * 2 + 1]
+      // ribbon quad corners (left/right of travel direction)
+      const lx0 = x0 + nx * hw0
+      const ly0 = y0 + ny * hw0
+      const rx0 = x0 - nx * hw0
+      const ry0 = y0 - ny * hw0
+      const lx1 = x1 + nx * hw1
+      const ly1 = y1 + ny * hw1
+      const rx1 = x1 - nx * hw1
+      const ry1 = y1 - ny * hw1
+      tri(lx0, ly0, lx1, ly1, rx1, ry1)
+      tri(lx0, ly0, rx1, ry1, rx0, ry0)
+    }
+  }
+  return out
+}
+
 /** Mask: 0 where source pixel matches the knockout color, 1 elsewhere.
  *  Soft ramp between tol and tol*1.25 so boundaries fade rather than jag. */
 export function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
@@ -598,6 +941,19 @@ export function renderHalftone(
       : cell < 8
         ? 4
         : 3
+  // screen dispatch: cell-grid shapes go through the spot screener, zebra
+  // flow builds its curve family and rasterizes variable-width strokes
+  const coverage = (inkMap: Float32Array, th: number): Float32Array => {
+    if (p.shape === 'zebra') {
+      const ribs = zebraRibbons(
+        inkMap, w, h, cell,
+        p.zebraStyle, p.zebraWidthMax, p.zebraWidthMin, p.zebraFlow,
+        th, p.dotScale,
+      )
+      return rasterizeZebra(ribs, w, h, crisp)
+    }
+    return screenCoverage(inkMap, w, h, th, cell, p.dotScale, p.shape, crisp, ss)
+  }
 
   if (p.mode === 'single') {
     // ink map from adjusted luminance (+ background knockout)
@@ -609,9 +965,7 @@ export function renderHalftone(
       inkMap[i] = (1 - lum) * (mask ? mask[i] : 1)
     }
     const blurred = blurInk(inkMap, w, h, cell)
-    const cov = screenCoverage(
-      blurred, w, h, theta, cell, p.dotScale, p.shape, crisp, ss,
-    )
+    const cov = coverage(blurred, theta)
 
     if (p.transparent) {
       // true knockout: alpha = ink coverage, straight-alpha RGBA, no paper
@@ -711,9 +1065,7 @@ export function renderHalftone(
       // angle, replicating Photoshop Color Halftone with equalized channels.
       const th =
         theta + ((p.uniformPlates ? 0 : plate.offset) * Math.PI) / 180
-      const cov = screenCoverage(
-        inkMap, w, h, th, cell, p.dotScale, p.shape, crisp, ss,
-      )
+      const cov = coverage(inkMap, th)
       if (invUnion) {
         for (let i = 0; i < n; i++) invUnion[i] *= 1 - cov[i]
       }

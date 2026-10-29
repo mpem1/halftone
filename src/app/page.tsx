@@ -21,12 +21,14 @@ import {
   DEFAULT_PARAMS,
   PLATE_ANGLES,
   SHAPE_LABELS,
+  ZEBRA_STYLE_LABELS,
   renderHalftone,
   type HalftoneParams,
   type OutputMode,
   type PlateFilter,
   type ScreenShape,
   type ToneMode,
+  type ZebraStyle,
 } from '@/lib/halftone'
 import { renderHalftoneSVG } from '@/lib/halftoneSvg'
 
@@ -67,6 +69,14 @@ function ShapeGlyph({ shape }: { shape: ScreenShape }) {
           <path d="M1.5 12 L5.5 9.5 L9.5 12 L13.5 9.5" />
         </g>
       )
+    case 'zebra':
+      return (
+        <g stroke={c} fill="none" strokeLinecap="round">
+          <path d="M1 3.5 Q 4.5 1, 8 3.5 T 15 3.5" strokeWidth="2.8" />
+          <path d="M1 8 Q 4.5 5.5, 8 8 T 15 8" strokeWidth="1.3" />
+          <path d="M1 12.5 Q 4.5 10, 8 12.5 T 15 12.5" strokeWidth="2.2" />
+        </g>
+      )
   }
 }
 
@@ -78,7 +88,9 @@ const SHAPES: ScreenShape[] = [
   'line',
   'wave',
   'zigzag',
+  'zebra',
 ]
+const ZEBRA_STYLES: ZebraStyle[] = ['waves', 'lines', 'rings', 'spiral', 'rays']
 const PLATES: PlateFilter[] = ['all', 'C', 'M', 'Y', 'K']
 
 const clampZ = (z: number) => Math.min(16, Math.max(0.02, z))
@@ -833,7 +845,7 @@ export default function HalftoneStudio() {
 
               {/* screen */}
               <Section title="Screen">
-                <div className="grid grid-cols-5 gap-1.5">
+                <div className="grid grid-cols-4 gap-1.5">
                   {SHAPES.map((s) => (
                     <button
                       key={s}
@@ -889,6 +901,72 @@ export default function HalftoneStudio() {
                   inked area of each cell equals the image tone exactly. Dots grow
                   round, merge into a checkerboard at 50%, then invert.
                 </p>
+                {params.shape === 'zebra' && (
+                  <>
+                    <div className="mt-1 rounded-lg border border-amber-500/25 bg-amber-500/5 p-2.5">
+                      <Label className="text-xs font-medium text-amber-400">
+                        Zebra flow — curve family
+                        <span className="mt-0.5 block text-[10px] font-normal text-zinc-500">
+                          ZebraTrace-style engraving: curves flow across the
+                          image and swell with darkness.
+                        </span>
+                      </Label>
+                      <div className="mt-2 grid grid-cols-5 gap-1.5">
+                        {ZEBRA_STYLES.map((s) => (
+                          <button
+                            key={s}
+                            title={ZEBRA_STYLE_LABELS[s]}
+                            aria-label={ZEBRA_STYLE_LABELS[s]}
+                            onClick={() => set('zebraStyle', s)}
+                            className={`h-7 rounded-md border text-[10px] font-medium transition-colors ${
+                              params.zebraStyle === s
+                                ? 'border-amber-500 bg-amber-500/10 text-amber-400'
+                                : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+                            }`}
+                          >
+                            {ZEBRA_STYLE_LABELS[s]}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="mt-2 space-y-3">
+                        <SliderField
+                          label="Flow (curve meander)"
+                          value={params.zebraFlow}
+                          min={0}
+                          max={1.2}
+                          step={0.05}
+                          display={`${Math.round(params.zebraFlow * 100)}%`}
+                          onChange={(v) => set('zebraFlow', v)}
+                        />
+                        <SliderField
+                          label="Max stroke width (solid black)"
+                          value={params.zebraWidthMax}
+                          min={0.2}
+                          max={1.3}
+                          step={0.05}
+                          display={`${Math.round(params.zebraWidthMax * 100)}% pitch`}
+                          onChange={(v) => set('zebraWidthMax', v)}
+                        />
+                        <SliderField
+                          label="Min stroke width (paper white)"
+                          value={params.zebraWidthMin}
+                          min={0}
+                          max={0.4}
+                          step={0.02}
+                          display={`${Math.round(params.zebraWidthMin * 100)}% pitch`}
+                          onChange={(v) => set('zebraWidthMin', v)}
+                        />
+                      </div>
+                      <p className="mt-1.5 text-[10px] leading-relaxed text-zinc-500">
+                        Curve spacing is the cell pitch, so Print ruling drives
+                        density. At 100% max width the average ink equals the
+                        image tone — the same calibration as the dot screens;
+                        raise it toward 130% to close the paper gaps in blacks
+                        for print.
+                      </p>
+                    </div>
+                  </>
+                )}
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
                     Crisp 1-bit edges (print)

@@ -28,6 +28,13 @@
  * circles at every tone and solid regions keep scalloped, not blocky,
  * boundaries.
  *
+ * Zebra flow shares zebraRibbons() with the raster: the same node chains
+ * and half-widths become filled ribbon polygons (left chain forward +
+ * right chain back). Geometry lives in IMAGE space — the screen angle is
+ * baked into the curves — so zebra paths are emitted without the plate
+ * rotation transform. Runs split where the stroke closes to zero width,
+ * mirroring the raster's tapered quads.
+ *
  * CMYK exports as four independently-angled plate groups composited with
  * multiply blending — the same rosette (or uniform) angles as the raster.
  * keepArt embeds the adjusted artwork and masks it through the vector
@@ -43,6 +50,7 @@ import {
   sampleMap,
   spotThreshold,
   SPOT_SEAL,
+  zebraRibbons,
   type HalftoneParams,
   type PlateName,
   type ScreenShape,
@@ -80,10 +88,79 @@ function lineOffset(shape: ScreenShape, rx: number, cell: number): number {
   return 0
 }
 
+/** Zebra ribbons → filled polygon paths in IMAGE space (no rotation group:
+ *  the screen angle is baked into the curve directions). Same node chains
+ *  and half-widths as the raster screener's ribbon quads. Runs split where
+ *  the stroke closes to zero width — same tapered ends as the raster. */
+function zebraMarks(
+  ink: Float32Array,
+  w: number,
+  h: number,
+  cell: number,
+  theta: number,
+  p: HalftoneParams,
+): string {
+  const ribs = zebraRibbons(
+    ink,
+    w,
+    h,
+    cell,
+    p.zebraStyle,
+    p.zebraWidthMax,
+    p.zebraWidthMin,
+    p.zebraFlow,
+    theta,
+    p.dotScale,
+  )
+  const out: string[] = []
+  const MIN_HW = 0.05 // below this the stroke is a hair — split the run here
+  for (const rb of ribs) {
+    const { pts, hw, closed } = rb
+    const n = hw.length
+    let left: string[] = []
+    let right: string[] = []
+    const flush = () => {
+      if (left.length >= 3) {
+        const rev = right.slice().reverse()
+        out.push(`<path d="M${left.join(' L')} L${rev.join(' L')} Z"/>`)
+      }
+      left = []
+      right = []
+    }
+    const count = closed ? n + 1 : n
+    for (let i = 0; i < count; i++) {
+      const idx = i % n
+      const hh = hw[idx]
+      if (hh < MIN_HW) {
+        flush()
+        continue
+      }
+      const px = pts[idx * 2]
+      const py = pts[idx * 2 + 1]
+      // tangent from neighbours (wrapped for loops, clamped for open curves)
+      const ip = idx > 0 ? idx - 1 : closed ? n - 1 : 0
+      const inx = idx < n - 1 ? idx + 1 : closed ? 0 : n - 1
+      let tx = pts[inx * 2] - pts[ip * 2]
+      let ty = pts[inx * 2 + 1] - pts[ip * 2 + 1]
+      const tl = Math.sqrt(tx * tx + ty * ty) || 1
+      tx /= tl
+      ty /= tl
+      const nx = -ty
+      const ny = tx
+      left.push(`${n2(px + nx * hh)},${n2(py + ny * hh)}`)
+      right.push(`${n2(px - nx * hh)},${n2(py - ny * hh)}`)
+    }
+    flush()
+  }
+  return out.join('')
+}
+
 /**
  * Marks for one plate, in SCREEN coordinates (rotation applied by the
  * caller's group transform). Grid is dot-centered: cell centers sit at
  * multiples of `cell`, exactly like the raster's rotation-about-center.
+ * Zebra is the exception: its marks are already in IMAGE space, so the
+ * caller emits them without the rotation transform.
  */
 function plateMarks(
   ink: Float32Array,
@@ -100,6 +177,10 @@ function plateMarks(
   const lineLike = isLineLike(shape)
   const half = cell * 0.5
   const ms = p.dotScale
+
+  if (shape === 'zebra') {
+    return zebraMarks(ink, w, h, cell, theta, p)
+  }
   // rotated image bounds in screen space
   const rxMax = Math.abs(ca) * (w / 2) + Math.abs(sa) * (h / 2)
   const ryMax = Math.abs(sa) * (w / 2) + Math.abs(ca) * (h / 2)
@@ -297,14 +378,16 @@ export function buildHalftoneSVG(o: SvgBuildOpts): string {
   )
 
   const single = p.mode === 'single'
+  // zebra marks are image-space (angle baked in) — never rotate them
+  const tf = p.shape === 'zebra'
+    ? ''
+    : `transform="translate(${n2(cx)} ${n2(cy)}) rotate(${n2(-p.angleDeg)})"`
   if (single && p.keepArt && o.artHref) {
     // art-in-marks: adjusted artwork masked through the vector marks
     const plate = o.plates[0]
     parts.push('<mask id="ht-marks" maskUnits="userSpaceOnUse" x="0" y="0" width="' + w + '" height="' + h + '">')
     parts.push(`<rect x="0" y="0" width="${w}" height="${h}" fill="black"/>`)
-    parts.push(
-      `<g transform="translate(${n2(cx)} ${n2(cy)}) rotate(${n2(-p.angleDeg)})" fill="white">`,
-    )
+    parts.push(`<g ${tf} fill="white">`)
     parts.push(plateMarks(plate.ink, w, h, plate.theta, cell, p))
     parts.push('</g></mask>')
     if (!p.transparent) parts.push(`<rect width="${w}" height="${h}" fill="#ffffff"/>`)
@@ -316,9 +399,10 @@ export function buildHalftoneSVG(o: SvgBuildOpts): string {
     parts.push('<g clip-path="url(#ht-clip)" style="isolation:isolate">')
     for (const plate of o.plates) {
       const blend = single ? '' : ' style="mix-blend-mode:multiply"'
-      parts.push(
-        `<g transform="translate(${n2(cx)} ${n2(cy)}) rotate(${n2(-(plate.theta * 180) / Math.PI)})" fill="${plate.fill}"${blend}>`,
-      )
+      const gTf = p.shape === 'zebra'
+        ? ''
+        : `transform="translate(${n2(cx)} ${n2(cy)}) rotate(${n2(-(plate.theta * 180) / Math.PI)})"`
+      parts.push(`<g ${gTf} fill="${plate.fill}"${blend}>`)
       parts.push(plateMarks(plate.ink, w, h, plate.theta, cell, p))
       parts.push('</g>')
     }
