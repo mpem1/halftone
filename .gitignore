@@ -55,3 +55,16 @@ server.log
 # local reference clones (storytold artcraft/photocraft)
 /reference/
 tool-results/
+
+# local-only media: personal photos, test screenshots, probe output
+# (purged from git history 2026-10 — never re-track these)
+.local-media/
+.git-backup-mirror/
+.verify-clone/
+upload/
+download/*.png
+download/*.gif
+scripts/probe-out/
+scripts/qa_*.png
+scripts/ramp_test.png
+scripts/preview_frame.png

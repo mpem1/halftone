@@ -249,7 +249,7 @@ export default function HalftoneStudio() {
   // initial sample
   useEffect(() => {
     const img = new Image()
-    img.onload = () => loadSource(img, 'sample.jpg — performer over clouds')
+    img.onload = () => loadSource(img, 'sample.jpg — demo scene')
     img.src = '/sample.jpg'
   }, [loadSource])
 
