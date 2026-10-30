@@ -20,7 +20,7 @@ export const metadata: Metadata = {
   keywords: ["halftone", "screen printing", "CMYK separation", "LPI", "halftone dots", "Next.js", "Canvas"],
   authors: [{ name: "mpem1" }],
   icons: {
-    icon: "/logo.svg",
+    icon: `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/logo.svg`,
   },
   openGraph: {
     title: "Halftone Studio",

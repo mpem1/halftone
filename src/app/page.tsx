@@ -250,7 +250,7 @@ export default function HalftoneStudio() {
   useEffect(() => {
     const img = new Image()
     img.onload = () => loadSource(img, 'sample.jpg — demo scene')
-    img.src = '/sample.jpg'
+    img.src = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ''}/sample.jpg`
   }, [loadSource])
 
   // render on parameter change (rAF-throttled)
