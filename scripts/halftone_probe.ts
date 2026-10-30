@@ -4,6 +4,7 @@
  * 990% zoom, and prints midtone statistics.
  */
 import sharp from 'sharp'
+import { mkdirSync } from 'node:fs'
 import {
   adjustImageData,
   blurInk,
@@ -13,8 +14,9 @@ import {
 } from '../src/lib/halftone.ts'
 import { buildHalftoneSVG } from '../src/lib/halftoneSvg.ts'
 
-const SRC = '/home/z/my-project/public/sample.jpg'
-const OUT = '/home/z/my-project/scripts/probe-out'
+const SRC = `${import.meta.dir}/../public/sample.jpg`
+const OUT = `${import.meta.dir}/probe-out`
+mkdirSync(OUT, { recursive: true })
 const W = 900 // working width similar to app's capped preview
 
 type Img = { data: Uint8ClampedArray; width: number; height: number }

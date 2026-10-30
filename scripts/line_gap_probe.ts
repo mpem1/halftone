@@ -7,6 +7,7 @@
  * Run before AND after the seal fix to prove the fix.
  */
 import sharp from 'sharp'
+import { mkdirSync } from 'node:fs'
 import {
   adjustImageData,
   blurInk,
@@ -16,7 +17,8 @@ import {
 } from '../src/lib/halftone.ts'
 import { buildHalftoneSVG } from '../src/lib/halftoneSvg.ts'
 
-const OUT = '/home/z/my-project/scripts/probe-out'
+const OUT = `${import.meta.dir}/probe-out`
+mkdirSync(OUT, { recursive: true })
 
 type Img = { data: Uint8ClampedArray; width: number; height: number }
 

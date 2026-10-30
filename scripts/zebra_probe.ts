@@ -12,7 +12,7 @@
  *   5. timing at export-scale resolution.
  */
 import sharp from 'sharp'
-import {promises as fs} from 'node:fs'
+import {mkdirSync, promises as fs} from 'node:fs'
 import {
   DEFAULT_PARAMS,
   ZEBRA_SEAL_K,
@@ -25,8 +25,9 @@ import {
 } from '../src/lib/halftone.ts'
 import { buildHalftoneSVG } from '../src/lib/halftoneSvg.ts'
 
-const OUT = '/home/z/my-project/scripts/probe-out'
-const SRC = '/home/z/my-project/public/sample.jpg'
+const OUT = `${import.meta.dir}/probe-out`
+const SRC = `${import.meta.dir}/../public/sample.jpg`
+mkdirSync(OUT, { recursive: true })
 
 type Img = { data: Uint8ClampedArray; width: number; height: number }
 

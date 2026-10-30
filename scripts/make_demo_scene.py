@@ -138,5 +138,7 @@ for y in range(mh):
 img.paste(ramp, (mx0, my0))
 
 out = img.filter(ImageFilter.GaussianBlur(0.4))
-out.save("/home/z/my-project/scripts/new-sample.jpg", "JPEG", quality=88, optimize=True)
-print("saved scripts/new-sample.jpg", out.size)
+import os
+out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "new-sample.jpg")
+out.save(out_path, "JPEG", quality=88, optimize=True)
+print("saved", out_path, out.size)
