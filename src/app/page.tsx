@@ -953,6 +953,100 @@ export default function HalftoneStudio() {
                   ))}
               </Section>
 
+              {/* mark fill — flat ink vs artwork-in-halftone */}
+              {!isCmyk && (
+                <Section title="Mark fill">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      size="sm"
+                      variant={!params.keepArt ? 'default' : 'outline'}
+                      className={
+                        !params.keepArt
+                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                          : 'border-zinc-700 hover:bg-zinc-800'
+                      }
+                      onClick={() => enableKeepArt(false)}
+                    >
+                      Flat ink
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={params.keepArt ? 'default' : 'outline'}
+                      className={
+                        params.keepArt
+                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                          : 'border-zinc-700 hover:bg-zinc-800'
+                      }
+                      onClick={() => enableKeepArt(true)}
+                    >
+                      Art in marks
+                    </Button>
+                  </div>
+                  {params.keepArt ? (
+                    <p className="text-xs leading-relaxed text-zinc-500">
+                      The original artwork stays visible inside every halftone mark —
+                      paper shows between them. Zoom into the preview to see the art
+                      pixels inside the shapes. A larger cell size shows more art per
+                      mark.
+                    </p>
+                  ) : (
+                    <div className="flex items-center justify-between">
+                      <Label className="text-xs text-zinc-300">Ink color</Label>
+                      <input
+                        type="color"
+                        value={params.inkColor}
+                        onChange={(e) => set('inkColor', e.target.value)}
+                        className="h-8 w-12 cursor-pointer rounded border border-zinc-700 bg-zinc-900"
+                        aria-label="Ink color"
+                      />
+                    </div>
+                  )}
+                </Section>
+              )}
+
+              {/* print ruling — Photoshop Bitmap → Halftone Screen units */}
+              <Section title="Print ruling (ppi × lpi)">
+                <div className="grid grid-cols-4 gap-1.5">
+                  {[150, 300, 600, 1200].map((v) => (
+                    <Button
+                      key={v}
+                      size="sm"
+                      variant={dpi === v ? 'default' : 'outline'}
+                      className={`h-7 px-1 font-mono text-xs ${
+                        dpi === v
+                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
+                          : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
+                      }`}
+                      onClick={() => {
+                        setDpi(v)
+                        applyRuling(v, lpi)
+                      }}
+                    >
+                      {v} ppi
+                    </Button>
+                  ))}
+                </div>
+                <SliderField
+                  label="Screen frequency"
+                  value={lpi}
+                  min={8}
+                  max={100}
+                  step={1}
+                  display={`${lpi} lpi`}
+                  onChange={(v) => {
+                    setLpi(v)
+                    applyRuling(dpi, v)
+                  }}
+                />
+                <p className="text-[10px] leading-relaxed text-zinc-500">
+                  {dpi} ppi × {lpi} lpi → <span className="font-mono text-zinc-400">{rulingCellExport.toFixed(1)} px</span> cell in the
+                  exported PNG, ≈{rulingDotsAcross} dots across. Lower lpi = bigger
+                  dots, exactly like Photoshop&apos;s Halftone Screen frequency.
+                  {rulingClamped &&
+                    ' That ruling is outside the 3–24 px preview range and was clamped — pick a higher lpi or lower ppi.'}
+                </p>
+              </Section>
+
               {/* screen */}
               <Section title="Screen">
                 <div className="grid grid-cols-4 gap-1.5">
@@ -1101,99 +1195,129 @@ export default function HalftoneStudio() {
                 )}
               </Section>
 
-              {/* print ruling — Photoshop Bitmap → Halftone Screen units */}
-              <Section title="Print ruling (ppi × lpi)">
-                <div className="grid grid-cols-4 gap-1.5">
-                  {[150, 300, 600, 1200].map((v) => (
+              {/* adjustments */}
+              <Section title="Image adjustments">
+                <div className="grid grid-cols-3 gap-1.5">
+                  {(
+                    [
+                      ['color', 'Color'],
+                      ['gray', 'Grayscale'],
+                      ['bw', 'B&W'],
+                    ] as [ToneMode, string][]
+                  ).map(([t, label]) => (
                     <Button
-                      key={v}
+                      key={t}
                       size="sm"
-                      variant={dpi === v ? 'default' : 'outline'}
-                      className={`h-7 px-1 font-mono text-xs ${
-                        dpi === v
+                      variant={params.tone === t ? 'default' : 'outline'}
+                      className={
+                        params.tone === t
                           ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
-                          : 'border-zinc-700 text-zinc-400 hover:bg-zinc-800'
-                      }`}
-                      onClick={() => {
-                        setDpi(v)
-                        applyRuling(v, lpi)
-                      }}
+                          : 'border-zinc-700 hover:bg-zinc-800'
+                      }
+                      onClick={() => set('tone', t)}
                     >
-                      {v} ppi
+                      {label}
                     </Button>
                   ))}
                 </div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">
+                    Invert tones
+                    <span className="block text-[10px] text-zinc-500">
+                      Light artwork prints, dark artwork becomes paper — for
+                      designs screened onto dark garments
+                    </span>
+                  </Label>
+                  <Switch
+                    checked={params.invert}
+                    onCheckedChange={(v) => set('invert', v)}
+                    aria-label="Invert image tones before screening"
+                  />
+                </div>
                 <SliderField
-                  label="Screen frequency"
-                  value={lpi}
-                  min={8}
-                  max={100}
-                  step={1}
-                  display={`${lpi} lpi`}
-                  onChange={(v) => {
-                    setLpi(v)
-                    applyRuling(dpi, v)
-                  }}
+                  label="Ink floor (solid coverage)"
+                  value={params.inkFloor}
+                  min={0}
+                  max={0.9}
+                  step={0.05}
+                  display={params.inkFloor === 0 ? 'off' : `${Math.round(params.inkFloor * 100)}%`}
+                  onChange={(v) => set('inkFloor', v)}
                 />
-                <p className="text-[10px] leading-relaxed text-zinc-500">
-                  {dpi} ppi × {lpi} lpi → <span className="font-mono text-zinc-400">{rulingCellExport.toFixed(1)} px</span> cell in the
-                  exported PNG, ≈{rulingDotsAcross} dots across. Lower lpi = bigger
-                  dots, exactly like Photoshop&apos;s Halftone Screen frequency.
-                  {rulingClamped &&
-                    ' That ruling is outside the 3–24 px preview range and was clamped — pick a higher lpi or lower ppi.'}
+                <p className="text-xs leading-relaxed text-zinc-500">
+                  {params.inkFloor > 0
+                    ? `Every kept area prints at least ${Math.round(params.inkFloor * 100)}% coverage — pale artwork (skin, highlights, white lettering) stays solid instead of dissolving into paper holes on dark garments. Knockout still clears the background.`
+                    : 'Off — ink follows the artwork tone exactly.'}
                 </p>
+                <p className="text-xs leading-relaxed text-zinc-500">
+                  {params.tone === 'bw'
+                    ? "Bitmap mode, like Photoshop's Bitmap → Halftone Screen: the photo keeps its full tone range, the screen turns it into pure 1-bit dots — no gray pixels. The Level slider weighs the output darker or lighter."
+                    : params.tone === 'gray'
+                      ? 'Continuous grayscale — smooth tones that drive the halftone shades.'
+                      : 'Full color — saturation and contrast apply before screening.'}
+                </p>
+                {params.tone === 'bw' && (
+                  <SliderField
+                    label="Level (exposure pivot)"
+                    value={params.threshold}
+                    min={0}
+                    max={1}
+                    step={0.01}
+                    display={`${Math.round(params.threshold * 100)}%`}
+                    onChange={(v) => set('threshold', v)}
+                  />
+                )}
+                {params.tone === 'color' && (
+                  <SliderField
+                    label="Saturation"
+                    value={params.saturation}
+                    min={-1}
+                    max={1}
+                    step={0.05}
+                    display={`${params.saturation > 0 ? '+' : ''}${Math.round(params.saturation * 100)}`}
+                    onChange={(v) => set('saturation', v)}
+                  />
+                )}
+                <SliderField
+                  label="Contrast"
+                  value={params.contrast}
+                  min={-1}
+                  max={1}
+                  step={0.05}
+                  display={`${params.contrast > 0 ? '+' : ''}${Math.round(params.contrast * 100)}`}
+                  onChange={(v) => set('contrast', v)}
+                />
+                <SliderField
+                  label="Lights (highlights)"
+                  value={params.lights}
+                  min={-1}
+                  max={1}
+                  step={0.02}
+                  display={`${params.lights > 0 ? '+' : ''}${Math.round(params.lights * 100)}`}
+                  onChange={(v) => set('lights', v)}
+                />
+                <SliderField
+                  label="Darks (shadows)"
+                  value={params.darks}
+                  min={-1}
+                  max={1}
+                  step={0.02}
+                  display={`${params.darks > 0 ? '+' : ''}${Math.round(params.darks * 100)}`}
+                  onChange={(v) => set('darks', v)}
+                />
+                <p className="text-xs leading-relaxed text-zinc-500">
+                  Split-tone levels, adjusted independently: Lights − pulls blown
+                  areas back into dots (save a bright face), Darks + opens shadows
+                  that plugged into solid ink.
+                </p>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="w-full text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
+                  onClick={() => setParams(DEFAULT_PARAMS)}
+                >
+                  <RotateCcw className="h-4 w-4" /> Reset all settings
+                </Button>
               </Section>
-
-              {/* mark fill — flat ink vs artwork-in-halftone */}
-              {!isCmyk && (
-                <Section title="Mark fill">
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      size="sm"
-                      variant={!params.keepArt ? 'default' : 'outline'}
-                      className={
-                        !params.keepArt
-                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
-                          : 'border-zinc-700 hover:bg-zinc-800'
-                      }
-                      onClick={() => enableKeepArt(false)}
-                    >
-                      Flat ink
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={params.keepArt ? 'default' : 'outline'}
-                      className={
-                        params.keepArt
-                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
-                          : 'border-zinc-700 hover:bg-zinc-800'
-                      }
-                      onClick={() => enableKeepArt(true)}
-                    >
-                      Art in marks
-                    </Button>
-                  </div>
-                  {params.keepArt ? (
-                    <p className="text-xs leading-relaxed text-zinc-500">
-                      The original artwork stays visible inside every halftone mark —
-                      paper shows between them. Zoom into the preview to see the art
-                      pixels inside the shapes. A larger cell size shows more art per
-                      mark.
-                    </p>
-                  ) : (
-                    <div className="flex items-center justify-between">
-                      <Label className="text-xs text-zinc-300">Ink color</Label>
-                      <input
-                        type="color"
-                        value={params.inkColor}
-                        onChange={(e) => set('inkColor', e.target.value)}
-                        className="h-8 w-12 cursor-pointer rounded border border-zinc-700 bg-zinc-900"
-                        aria-label="Ink color"
-                      />
-                    </div>
-                  )}
-                </Section>
-              )}
 
               {/* background & transparency */}
               <Section title="Background">
@@ -1473,130 +1597,6 @@ export default function HalftoneStudio() {
                     </p>
                   </>
                 )}
-              </Section>
-
-              {/* adjustments */}
-              <Section title="Image adjustments">
-                <div className="grid grid-cols-3 gap-1.5">
-                  {(
-                    [
-                      ['color', 'Color'],
-                      ['gray', 'Grayscale'],
-                      ['bw', 'B&W'],
-                    ] as [ToneMode, string][]
-                  ).map(([t, label]) => (
-                    <Button
-                      key={t}
-                      size="sm"
-                      variant={params.tone === t ? 'default' : 'outline'}
-                      className={
-                        params.tone === t
-                          ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
-                          : 'border-zinc-700 hover:bg-zinc-800'
-                      }
-                      onClick={() => set('tone', t)}
-                    >
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-                <div className="flex items-center justify-between">
-                  <Label className="text-xs text-zinc-300">
-                    Invert tones
-                    <span className="block text-[10px] text-zinc-500">
-                      Light artwork prints, dark artwork becomes paper — for
-                      designs screened onto dark garments
-                    </span>
-                  </Label>
-                  <Switch
-                    checked={params.invert}
-                    onCheckedChange={(v) => set('invert', v)}
-                    aria-label="Invert image tones before screening"
-                  />
-                </div>
-                <SliderField
-                  label="Ink floor (solid coverage)"
-                  value={params.inkFloor}
-                  min={0}
-                  max={0.9}
-                  step={0.05}
-                  display={params.inkFloor === 0 ? 'off' : `${Math.round(params.inkFloor * 100)}%`}
-                  onChange={(v) => set('inkFloor', v)}
-                />
-                <p className="text-xs leading-relaxed text-zinc-500">
-                  {params.inkFloor > 0
-                    ? `Every kept area prints at least ${Math.round(params.inkFloor * 100)}% coverage — pale artwork (skin, highlights, white lettering) stays solid instead of dissolving into paper holes on dark garments. Knockout still clears the background.`
-                    : 'Off — ink follows the artwork tone exactly.'}
-                </p>
-                <p className="text-xs leading-relaxed text-zinc-500">
-                  {params.tone === 'bw'
-                    ? "Bitmap mode, like Photoshop's Bitmap → Halftone Screen: the photo keeps its full tone range, the screen turns it into pure 1-bit dots — no gray pixels. The Level slider weighs the output darker or lighter."
-                    : params.tone === 'gray'
-                      ? 'Continuous grayscale — smooth tones that drive the halftone shades.'
-                      : 'Full color — saturation and contrast apply before screening.'}
-                </p>
-                {params.tone === 'bw' && (
-                  <SliderField
-                    label="Level (exposure pivot)"
-                    value={params.threshold}
-                    min={0}
-                    max={1}
-                    step={0.01}
-                    display={`${Math.round(params.threshold * 100)}%`}
-                    onChange={(v) => set('threshold', v)}
-                  />
-                )}
-                {params.tone === 'color' && (
-                  <SliderField
-                    label="Saturation"
-                    value={params.saturation}
-                    min={-1}
-                    max={1}
-                    step={0.05}
-                    display={`${params.saturation > 0 ? '+' : ''}${Math.round(params.saturation * 100)}`}
-                    onChange={(v) => set('saturation', v)}
-                  />
-                )}
-                <SliderField
-                  label="Contrast"
-                  value={params.contrast}
-                  min={-1}
-                  max={1}
-                  step={0.05}
-                  display={`${params.contrast > 0 ? '+' : ''}${Math.round(params.contrast * 100)}`}
-                  onChange={(v) => set('contrast', v)}
-                />
-                <SliderField
-                  label="Lights (highlights)"
-                  value={params.lights}
-                  min={-1}
-                  max={1}
-                  step={0.02}
-                  display={`${params.lights > 0 ? '+' : ''}${Math.round(params.lights * 100)}`}
-                  onChange={(v) => set('lights', v)}
-                />
-                <SliderField
-                  label="Darks (shadows)"
-                  value={params.darks}
-                  min={-1}
-                  max={1}
-                  step={0.02}
-                  display={`${params.darks > 0 ? '+' : ''}${Math.round(params.darks * 100)}`}
-                  onChange={(v) => set('darks', v)}
-                />
-                <p className="text-xs leading-relaxed text-zinc-500">
-                  Split-tone levels, adjusted independently: Lights − pulls blown
-                  areas back into dots (save a bright face), Darks + opens shadows
-                  that plugged into solid ink.
-                </p>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="w-full text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-                  onClick={() => setParams(DEFAULT_PARAMS)}
-                >
-                  <RotateCcw className="h-4 w-4" /> Reset all settings
-                </Button>
               </Section>
 
               {/* target area — local dodge & burn before screening */}
