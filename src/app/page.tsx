@@ -1179,52 +1179,21 @@ export default function HalftoneStudio() {
                 )}
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
-                    Knockout
+                    Remove background color
                     <span className="block text-[10px] text-zinc-500">
-                      remove or keep a color range before screening — pick the
-                      garment or background color and raise tolerance until it
-                      clears
+                      knockout — no dots where it shows. Pick the garment color
+                      (white, black, pink…) and raise tolerance until the
+                      background clears
                     </span>
                   </Label>
                   <Switch
                     checked={params.knockout}
                     onCheckedChange={(v) => set('knockout', v)}
-                    aria-label="Knock out a color range before halftoning"
+                    aria-label="Remove background color before halftoning"
                   />
                 </div>
                 {params.knockout && (
                   <>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      <Button
-                        size="sm"
-                        variant={params.knockoutMode === 'remove' ? 'default' : 'outline'}
-                        className={
-                          params.knockoutMode === 'remove'
-                            ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
-                            : 'border-zinc-700 hover:bg-zinc-800'
-                        }
-                        onClick={() => set('knockoutMode', 'remove')}
-                      >
-                        Remove color
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant={params.knockoutMode === 'keep' ? 'default' : 'outline'}
-                        className={
-                          params.knockoutMode === 'keep'
-                            ? 'bg-amber-500 font-medium text-zinc-950 hover:bg-amber-400'
-                            : 'border-zinc-700 hover:bg-zinc-800'
-                        }
-                        onClick={() => set('knockoutMode', 'keep')}
-                      >
-                        Keep only color
-                      </Button>
-                    </div>
-                    <p className="text-xs leading-relaxed text-zinc-500">
-                      {params.knockoutMode === 'remove'
-                        ? 'No dots where the picked color shows — for dropping a background that matches the shirt.'
-                        : 'Dots only where the picked color shows — everything else is knocked out.'}
-                    </p>
                     <div className="flex items-center justify-between">
                       <Label className="text-xs text-zinc-300">Knockout color</Label>
                       <input
@@ -1235,23 +1204,6 @@ export default function HalftoneStudio() {
                         aria-label="Knockout color"
                       />
                     </div>
-                    {params.knockoutMode === 'remove' && (
-                      <div className="flex items-center justify-between">
-                        <Label className="text-xs text-zinc-300">
-                          Connected to edges only
-                          <span className="block text-[10px] text-zinc-500">
-                            only the background that touches the image border
-                            goes — same-colored shapes inside the design keep
-                            their ink. Off = every matching pixel
-                          </span>
-                        </Label>
-                        <Switch
-                          checked={params.knockoutConnected}
-                          onCheckedChange={(v) => set('knockoutConnected', v)}
-                          aria-label="Knock out only the color range connected to the image edges"
-                        />
-                      </div>
-                    )}
                     <SliderField
                       label="Tolerance"
                       value={params.knockoutTolerance}
@@ -1292,17 +1244,16 @@ export default function HalftoneStudio() {
                 </div>
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
-                    Invert colors
+                    Invert tones
                     <span className="block text-[10px] text-zinc-500">
-                      color negative of the artwork (Photoshop → Invert) —
-                      light areas print, dark areas become paper. Art in marks
-                      shows the negative colors; flat ink keeps your ink choice
+                      Light artwork prints, dark artwork becomes paper — for
+                      designs screened onto dark garments
                     </span>
                   </Label>
                   <Switch
                     checked={params.invert}
                     onCheckedChange={(v) => set('invert', v)}
-                    aria-label="Invert the artwork colors before screening"
+                    aria-label="Invert image tones before screening"
                   />
                 </div>
                 <p className="text-xs leading-relaxed text-zinc-500">
