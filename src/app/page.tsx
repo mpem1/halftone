@@ -1435,19 +1435,19 @@ export default function HalftoneStudio() {
                       display={`${params.edgeFadeH}%`}
                       onChange={(v) => set('edgeFadeH', v)}
                     />
-                    {(params.edgeFadeShape === 'square' ||
-                      params.edgeFadeShape === 'rect' ||
-                      params.edgeFadeShape === 'diamond') && (
-                      <SliderField
-                        label="Round corners"
-                        value={params.edgeFadeRound}
-                        min={0}
-                        max={100}
-                        step={1}
-                        display={`${params.edgeFadeRound}%`}
-                        onChange={(v) => set('edgeFadeRound', v)}
-                      />
-                    )}
+                    <SliderField
+                      label="Round corners"
+                      value={params.edgeFadeRound}
+                      min={0}
+                      max={100}
+                      step={1}
+                      display={`${params.edgeFadeRound}%`}
+                      onChange={(v) => set('edgeFadeRound', v)}
+                      disabled={
+                        params.edgeFadeShape === 'circle' ||
+                        params.edgeFadeShape === 'oval'
+                      }
+                    />
                     <SliderField
                       label="Blur / fade distance"
                       value={params.edgeFadeFeather}
@@ -1671,6 +1671,7 @@ function SliderField({
   step,
   display,
   onChange,
+  disabled = false,
 }: {
   label: string
   value: number
@@ -1679,9 +1680,16 @@ function SliderField({
   step: number
   display: string
   onChange: (v: number) => void
+  disabled?: boolean
 }) {
   return (
-    <div className="space-y-2">
+    <div
+      className="space-y-2"
+      // dimmed, not hidden: an option that vanishes when it can't apply
+      // is invisible to the person who needs to know it exists
+      style={disabled ? { opacity: 0.4 } : undefined}
+      title={disabled ? `${label} — not available for this shape` : undefined}
+    >
       <div className="flex items-center justify-between">
         <Label className="text-xs text-zinc-300">{label}</Label>
         <span className="font-mono text-xs text-amber-400">{display}</span>
@@ -1691,6 +1699,7 @@ function SliderField({
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         onValueChange={(v) => onChange(v[0])}
         aria-label={label}
       />
