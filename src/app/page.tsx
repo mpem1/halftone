@@ -120,6 +120,9 @@ export default function HalftoneStudio() {
   const [fileName, setFileName] = useState('sample.jpg')
   const [renderMs, setRenderMs] = useState(0)
   const [exporting, setExporting] = useState(false)
+  // A/B compare: flip the workspace between the untouched original and the
+  // halftone. Pure view state — exports never read it.
+  const [abCompare, setAbCompare] = useState(false)
   const [ready, setReady] = useState(false)
   // print ruling (Photoshop Bitmap → Halftone Screen semantics):
   // output resolution in ppi × screen frequency in lpi → cell pitch
@@ -264,6 +267,18 @@ export default function HalftoneStudio() {
       const src = srcRef.current
       const cv = viewRef.current
       if (!src || !cv) return
+      if (abCompare) {
+        // A/B compare: blit the untouched original at working resolution —
+        // same canvas, same zoom/pan, no halftone pass
+        cv.width = src.width
+        cv.height = src.height
+        cv.getContext('2d')!.drawImage(src, 0, 0)
+        if (fitPendingRef.current) {
+          fitPendingRef.current = false
+          fitView()
+        }
+        return
+      }
       const t0 = performance.now()
       const svg = renderHalftoneSVG(src, params, 1)
       rasterizeSvg(svg, src.width, src.height)
@@ -281,7 +296,7 @@ export default function HalftoneStudio() {
         .catch(() => {})
     }, 40)
     return () => clearTimeout(t)
-  }, [params, ready, fitView])
+  }, [params, ready, fitView, abCompare])
 
   // preview-only backdrop: paint behind the marks so the design can be
   // judged against a garment color. Lives on the canvas element's CSS
@@ -726,6 +741,14 @@ export default function HalftoneStudio() {
                     opacity: fitted ? 1 : 0,
                   }}
                 />
+                {abCompare && (
+                  <div
+                    aria-hidden="true"
+                    className="pointer-events-none absolute left-3 top-3 rounded bg-zinc-950/85 px-2 py-1 text-[10px] font-medium tracking-wider text-zinc-200 shadow-lg backdrop-blur"
+                  >
+                    ORIGINAL
+                  </div>
+                )}
                 {/* zoom controls */}
                 <div
                   data-no-pan
@@ -1244,6 +1267,20 @@ export default function HalftoneStudio() {
                     )}
                   </>
                 )}
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">
+                    A/B compare
+                    <span className="block text-[10px] text-zinc-500">
+                      flip the workspace to the untouched original — judge what
+                      the screening did before you export. Preview only
+                    </span>
+                  </Label>
+                  <Switch
+                    checked={abCompare}
+                    onCheckedChange={setAbCompare}
+                    aria-label="Show the original image instead of the halftone"
+                  />
+                </div>
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
                     Knockout
