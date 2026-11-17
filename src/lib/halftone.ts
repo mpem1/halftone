@@ -100,6 +100,7 @@ export interface HalftoneParams {
   inkColor: string // hex, single mode
   transparent: boolean // marks on transparent background (alpha PNG)
   crisp: boolean // hard 1-bit mark edges — no anti-aliasing (print mode)
+  invert: boolean // invert image tones before screening (light = ink, for dark garments)
   knockout: boolean // remove background-colored source areas before screening
   knockoutColor: string // hex, background color to remove
   knockoutTolerance: number // 0..0.35 how far from knockoutColor still counts
@@ -133,6 +134,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   inkColor: '#000000',
   transparent: false,
   crisp: true,
+  invert: false,
   knockout: false,
   knockoutColor: '#ffffff',
   knockoutTolerance: 0.1,
@@ -194,11 +196,19 @@ function hexToRgb01(hex: string): [number, number, number] {
  *  both). Targeted region: p.spotExposure shifts luminance inside a feathered
  *  circular area (center/radius in normalized coords → resolution-independent,
  *  preview and export land identically). Both preserve hue by scaling RGB
- *  toward the new luminance. */
+ *  toward the new luminance.
+ *
+ *  p.invert flips every channel at the END of the chain (Photoshop's
+ *  Adjustments → Invert before Bitmap): light artwork prints, dark artwork
+ *  becomes paper — the workflow for designs screened onto dark garments.
+ *  The knockout mask compensates for the flip (see buildKnockoutMask), so
+ *  "remove background color" keeps matching the colors visible in the
+ *  ORIGINAL artwork regardless of the invert. */
 export function adjustImageData(img: ImageData, p: HalftoneParams): void {
   const sat = p.tone === 'color' ? 1 + p.saturation : 0
   const con = 1 + p.contrast
   const shift = p.tone === 'bw' ? (p.threshold - 0.5) * 1.2 : 0
+  const inv = p.invert
   const li = p.lights
   const da = p.darks
   const split = li !== 0 || da !== 0
@@ -266,9 +276,17 @@ export function adjustImageData(img: ImageData, p: HalftoneParams): void {
       g += shift
       b += shift
     }
-    d[i] = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
-    d[i + 1] = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
-    d[i + 2] = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
+    let R = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
+    let G = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
+    let B = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
+    if (inv) {
+      R = 255 - R
+      G = 255 - G
+      B = 255 - B
+    }
+    d[i] = R
+    d[i + 1] = G
+    d[i + 2] = B
     d[i + 3] = 255
     px++
     if (px === w) {
@@ -873,9 +891,15 @@ export function rasterizeZebra(
 }
 
 /** Mask: 0 where source pixel matches the knockout color, 1 elsewhere.
- *  Soft ramp between tol and tol*1.25 so boundaries fade rather than jag. */
+ *  Soft ramp between tol and tol*1.25 so boundaries fade rather than jag.
+ *  Runs on the ADJUSTED image, and adjustImageData may have inverted it —
+ *  inverting the knockout color too keeps the match pinned to the colors
+ *  visible in the ORIGINAL artwork (channel distance is symmetric under
+ *  inversion), so "remove the white/black/pink background" means the same
+ *  thing with or without the invert toggle. */
 export function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
-  const kc = hexToRgb01(p.knockoutColor)
+  const kc0 = hexToRgb01(p.knockoutColor)
+  const kc = p.invert ? ([1 - kc0[0], 1 - kc0[1], 1 - kc0[2]] as const) : kc0
   const lo = p.knockoutTolerance
   const hi = lo * 1.25 + 0.02
   const d = img.data

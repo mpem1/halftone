@@ -298,6 +298,39 @@ export default function HalftoneStudio() {
     [loadSource],
   )
 
+  // --- drag & drop upload -----------------------------------------------
+  // Files can land anywhere on the page; a depth counter keeps the overlay
+  // steady while the drag crosses child elements (dragleave fires per child).
+  const [dragOver, setDragOver] = useState(false)
+  const dragDepth = useRef(0)
+  useEffect(() => {
+    // stop the browser from navigating away when a file misses the app
+    const stop = (e: DragEvent) => e.preventDefault()
+    window.addEventListener('dragover', stop)
+    window.addEventListener('drop', stop)
+    return () => {
+      window.removeEventListener('dragover', stop)
+      window.removeEventListener('drop', stop)
+    }
+  }, [])
+  const onDragEnter = (e: React.DragEvent) => {
+    if (![...e.dataTransfer.types].includes('Files')) return
+    e.preventDefault()
+    dragDepth.current++
+    setDragOver(true)
+  }
+  const onDragLeave = (e: React.DragEvent) => {
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragOver(false)
+  }
+  const onDropFile = (e: React.DragEvent) => {
+    e.preventDefault()
+    dragDepth.current = 0
+    setDragOver(false)
+    const f = e.dataTransfer.files?.[0]
+    if (f && f.type.startsWith('image/')) onFile(f)
+  }
+
   const exportPng = useCallback(async () => {
     if (!origRef.current) return
     setExporting(true)
@@ -618,7 +651,22 @@ export default function HalftoneStudio() {
   const rulingClamped = rulingPreviewCell < 3 || rulingPreviewCell > 24
 
   return (
-    <div className="dark min-h-screen bg-zinc-950 text-zinc-100">
+    <div
+      className="dark min-h-screen bg-zinc-950 text-zinc-100"
+      onDragEnter={onDragEnter}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={onDragLeave}
+      onDrop={onDropFile}
+    >
+      {dragOver && (
+        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-zinc-950/80 backdrop-blur-sm">
+          <div className="rounded-xl border-2 border-dashed border-amber-500 bg-zinc-900/90 px-10 py-8 text-center shadow-2xl">
+            <Upload className="mx-auto h-8 w-8 text-amber-400" />
+            <p className="mt-3 text-sm font-medium text-zinc-100">Drop image to screen it</p>
+            <p className="mt-1 text-xs text-zinc-500">jpg · png · webp — anything the browser can decode</p>
+          </div>
+        </div>
+      )}
       <header className="border-b border-zinc-800 bg-zinc-950/90 px-4 py-3 lg:px-6">
         <div className="mx-auto flex max-w-[1600px] items-center justify-between gap-3">
           <div className="flex items-baseline gap-3">
@@ -1133,7 +1181,9 @@ export default function HalftoneStudio() {
                   <Label className="text-xs text-zinc-300">
                     Remove background color
                     <span className="block text-[10px] text-zinc-500">
-                      knockout — no dots where it shows
+                      knockout — no dots where it shows. Pick the garment color
+                      (white, black, pink…) and raise tolerance until the
+                      background clears
                     </span>
                   </Label>
                   <Switch
@@ -1191,6 +1241,20 @@ export default function HalftoneStudio() {
                       {label}
                     </Button>
                   ))}
+                </div>
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">
+                    Invert tones
+                    <span className="block text-[10px] text-zinc-500">
+                      Light artwork prints, dark artwork becomes paper — for
+                      designs screened onto dark garments
+                    </span>
+                  </Label>
+                  <Switch
+                    checked={params.invert}
+                    onCheckedChange={(v) => set('invert', v)}
+                    aria-label="Invert image tones before screening"
+                  />
                 </div>
                 <p className="text-xs leading-relaxed text-zinc-500">
                   {params.tone === 'bw'
