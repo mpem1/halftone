@@ -101,9 +101,12 @@ export interface HalftoneParams {
   transparent: boolean // marks on transparent background (alpha PNG)
   crisp: boolean // hard 1-bit mark edges — no anti-aliasing (print mode)
   invert: boolean // invert image tones before screening (light = ink, for dark garments)
+  inkFloor: number // 0..0.9 minimum ink coverage for kept areas — pale artwork stops washing out
   knockout: boolean // remove background-colored source areas before screening
   knockoutColor: string // hex, background color to remove
   knockoutTolerance: number // 0..0.35 how far from knockoutColor still counts
+  knockoutMode: 'remove' | 'keep' // remove the picked range, or keep ONLY the picked range
+  knockoutConnected: boolean // remove mode: flood only from the image borders, so shapes of the same color inside the design survive
   zebraStyle: ZebraStyle // zebra shape: how the curves flow across the image
   zebraWidthMax: number // stroke width at solid black, × cell pitch (1 = tone-true)
   zebraWidthMin: number // stroke width at white, × cell pitch (hairline keeps curves visible)
@@ -135,9 +138,12 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   transparent: false,
   crisp: true,
   invert: false,
+  inkFloor: 0,
   knockout: false,
   knockoutColor: '#ffffff',
   knockoutTolerance: 0.1,
+  knockoutMode: 'remove',
+  knockoutConnected: true,
   zebraStyle: 'waves',
   zebraWidthMax: 1,
   zebraWidthMin: 0.03,
@@ -890,28 +896,84 @@ export function rasterizeZebra(
   return out
 }
 
-/** Mask: 0 where source pixel matches the knockout color, 1 elsewhere.
+/** Mask: 0 where the picked color range is knocked out, 1 where ink survives.
  *  Soft ramp between tol and tol*1.25 so boundaries fade rather than jag.
  *  Runs on the ADJUSTED image, and adjustImageData may have inverted it —
  *  inverting the knockout color too keeps the match pinned to the colors
  *  visible in the ORIGINAL artwork (channel distance is symmetric under
  *  inversion), so "remove the white/black/pink background" means the same
- *  thing with or without the invert toggle. */
+ *  thing with or without the invert toggle.
+ *
+ *  Modes:
+ *  - 'remove': knock out the picked color range. With p.knockoutConnected
+ *    the range only goes where it is CONNECTED to the image border (4-way
+ *    flood fill) — the actual background. Shapes of the same color enclosed
+ *    inside the design (a black dress on a smoky background) survive with
+ *    their ink instead of being wiped along with the background.
+ *  - 'keep': knock out everything OUTSIDE the picked range — extract only
+ *    that color from the design. */
 export function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
   const kc0 = hexToRgb01(p.knockoutColor)
   const kc = p.invert ? ([1 - kc0[0], 1 - kc0[1], 1 - kc0[2]] as const) : kc0
   const lo = p.knockoutTolerance
   const hi = lo * 1.25 + 0.02
   const d = img.data
-  const mask = new Float32Array(d.length / 4).fill(1)
-  for (let i = 0, j = 0; i < mask.length; i++, j += 4) {
-    const dist = Math.max(
+  const n = d.length / 4
+  const w = img.width
+  const h = img.height
+  const mask = new Float32Array(n).fill(1)
+  const distAt = (i: number): number => {
+    const j = i * 4
+    return Math.max(
       Math.abs(d[j] / 255 - kc[0]),
       Math.abs(d[j + 1] / 255 - kc[1]),
       Math.abs(d[j + 2] / 255 - kc[2]),
     )
+  }
+  if (p.knockoutMode === 'keep') {
+    for (let i = 0; i < n; i++) {
+      const dist = distAt(i)
+      if (dist <= lo) mask[i] = 1
+      else if (dist < hi) mask[i] = (hi - dist) / (hi - lo)
+      else mask[i] = 0
+    }
+    return mask
+  }
+  for (let i = 0; i < n; i++) {
+    const dist = distAt(i)
     if (dist <= lo) mask[i] = 0
     else if (dist < hi) mask[i] = (dist - lo) / (hi - lo)
+  }
+  if (p.knockoutConnected) {
+    // flood the picked range inward from the borders; whatever the flood
+    // never reaches is part of the design and keeps its ink
+    const flooded = new Uint8Array(n)
+    const q = new Int32Array(n)
+    let qh = 0
+    let qt = 0
+    const seed = (i: number) => {
+      if (!flooded[i] && distAt(i) < hi) {
+        flooded[i] = 1
+        q[qt++] = i
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      seed(x)
+      seed((h - 1) * w + x)
+    }
+    for (let y = 0; y < h; y++) {
+      seed(y * w)
+      seed(y * w + w - 1)
+    }
+    while (qh < qt) {
+      const i = q[qh++]
+      const x = i % w
+      if (x > 0) seed(i - 1)
+      if (x < w - 1) seed(i + 1)
+      if (i >= w) seed(i - w)
+      if (i < n - w) seed(i + w)
+    }
+    for (let i = 0; i < n; i++) if (!flooded[i]) mask[i] = 1
   }
   return mask
 }
@@ -984,9 +1046,16 @@ export function renderHalftone(
     const d = adjId.data
     const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
     const inkMap: Float32Array = new Float32Array(n)
+    const floor = p.inkFloor
     for (let i = 0, j = 0; i < n; i++, j += 4) {
       const lum = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255
-      inkMap[i] = (1 - lum) * (mask ? mask[i] : 1)
+      // ink floor: kept areas never print below the floor — bright artwork
+      // (skin, highlights, white lettering) stops dissolving into paper
+      // holes on dark garments. The knockout mask still wins afterwards,
+      // so a knocked-out background stays empty.
+      let ink = 1 - lum
+      if (floor > 0 && ink < floor) ink = floor
+      inkMap[i] = ink * (mask ? mask[i] : 1)
     }
     const blurred = blurInk(inkMap, w, h, cell)
     const cov = coverage(blurred, theta)

@@ -435,9 +435,14 @@ export function renderHalftoneSVG(
   if (p.mode === 'single') {
     const d = adjId.data
     const ink = new Float32Array(n)
+    const floor = p.inkFloor
     for (let i = 0, j = 0; i < n; i++, j += 4) {
       const lum = (0.299 * d[j] + 0.587 * d[j + 1] + 0.114 * d[j + 2]) / 255
-      ink[i] = (1 - lum) * (mask ? mask[i] : 1)
+      // ink floor: kept areas never print below the floor (twin of the
+      // raster path) — knockout still wins afterwards
+      let v = 1 - lum
+      if (floor > 0 && v < floor) v = floor
+      ink[i] = v * (mask ? mask[i] : 1)
     }
     blurInk(ink, w, h, cell)
     let artHref: string | undefined
