@@ -141,7 +141,10 @@ for (const s of scenarios) {
 /* ------------------------------------------------------------------ */
 
 async function svgScenario(tag: string, p: Partial<HalftoneParams>) {
-  const pp: HalftoneParams = { ...DEFAULT_PARAMS, ...p }
+  // parity measures mark geometry with flat ink over paper — pin the
+  // export-surface defaults (art embedding, transparent paper) so they
+  // can't distort the coverage metric
+  const pp: HalftoneParams = { ...DEFAULT_PARAMS, ...p, keepArt: false, transparent: false }
   const cw = 400
   const ch = 300
   // left half = 50% gray (ink 0.5), right half = 25% gray (ink 0.75)
