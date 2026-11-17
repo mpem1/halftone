@@ -20,16 +20,16 @@ Built with Next.js + SVG. No upload, no server processing: every pixel is screen
 - **Rank-calibrated spot functions** — mark area is proportional to tone for every shape (method calibrated against storytold/photocraft's cosine screens)
 - **CMYK separation** — four plates at print angles (C 15° / M 75° / Y 0° / K 45°) with an optional **uniform angle** mode for screen printing
 - **Smooth vector marks everywhere** — marks are true vector contours, so preview, PNG and SVG all show smooth, printer-grade edges; screen printers get hard 1-bit edges from the PNG option below
-- **Invert tones** — light artwork prints and dark artwork becomes paper (Photoshop's Adjustments → Invert before Bitmap): the workflow for screening a design onto a dark garment. The knockout color keeps matching the colors visible in the original artwork either way
-- **Garment-color knockout** — "remove background color" takes any shirt color: pick white, black or pink and raise the tolerance until the background clears — no matter whether that range is lighter or darker than the art
+- **Invert colors** — a true color negative applied at the start of the adjustment chain (Photoshop's Adjustments → Invert): the artwork's colors flip visibly (art-in-marks and CMYK show the negative), and flipping colors also flips which areas print — light artwork prints, dark artwork becomes paper, the workflow for dark garments. The knockout color keeps matching the colors visible in the original artwork either way
+- **Garment-color knockout, remove or keep** — "Knockout" takes any shirt/background color: **Remove color** drops no dots where it shows; **Keep only color** prints just that range and knocks out everything else. **Connected to edges only** flood-fills inward from the image border, so the actual background goes while shapes of the same color *inside* the design (white letters on a white background) keep their ink — turn it off to wipe every matching pixel instead
 - **Art in marks** — fill the marks with the source artwork itself instead of flat ink
 - **Drag & drop** — drop an image anywhere on the page (jpg/png/webp) instead of hunting through folders; the Upload button still works
 
 ### Adjustments
 Exposure, contrast, level pivot, blur/sharpen, and more — applied to the continuous-tone image *before* screening, matching Photoshop's Grayscale → Levels → Bitmap order.
-- **Split-tone levels** — lift or crush shadows and highlights independently, so you can recover detail in faces or skies without shifting the whole image
+- **Split-tone levels** — lift or crush shadows and highlights independently, so you can recover detail in faces or skies without shifting the whole image; channels are renormalized together when they would clip, so heavy lifts never repaint shadows blue/green or highlights yellow
 - **Targeted exposure (dodge & burn)** — brush a region on the image and lighten or darken just that area before screening
-- **Invert** — flips the artwork at the end of the adjustment chain, so a black design with white/blue details screens correctly onto a black shirt (invert on) or a white shirt (invert off, knock out the black background)
+- **Invert** — flips the artwork's colors to their negative first, so a black design with white/blue details screens correctly onto a black shirt (invert on) or a white shirt (invert off, knock out the black background)
 
 ### Export — one geometry, three outputs
 

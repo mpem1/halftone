@@ -104,6 +104,8 @@ export interface HalftoneParams {
   knockout: boolean // remove background-colored source areas before screening
   knockoutColor: string // hex, background color to remove
   knockoutTolerance: number // 0..0.35 how far from knockoutColor still counts
+  knockoutMode: 'remove' | 'keep' // remove the picked range, or keep ONLY the picked range
+  knockoutConnected: boolean // remove mode: flood only from the image borders, so shapes of the same color inside the design survive
   zebraStyle: ZebraStyle // zebra shape: how the curves flow across the image
   zebraWidthMax: number // stroke width at solid black, × cell pitch (1 = tone-true)
   zebraWidthMin: number // stroke width at white, × cell pitch (hairline keeps curves visible)
@@ -138,6 +140,8 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   knockout: false,
   knockoutColor: '#ffffff',
   knockoutTolerance: 0.1,
+  knockoutMode: 'remove',
+  knockoutConnected: true,
   zebraStyle: 'waves',
   zebraWidthMax: 1,
   zebraWidthMin: 0.03,
@@ -196,14 +200,18 @@ function hexToRgb01(hex: string): [number, number, number] {
  *  both). Targeted region: p.spotExposure shifts luminance inside a feathered
  *  circular area (center/radius in normalized coords → resolution-independent,
  *  preview and export land identically). Both preserve hue by scaling RGB
- *  toward the new luminance.
+ *  toward the new luminance — and when the scaled channels would clip, ALL
+ *  channels are renormalized by the same factor instead of clamping
+ *  per-channel, which would otherwise repaint shadows blue/green.
  *
- *  p.invert flips every channel at the END of the chain (Photoshop's
- *  Adjustments → Invert before Bitmap): light artwork prints, dark artwork
- *  becomes paper — the workflow for designs screened onto dark garments.
- *  The knockout mask compensates for the flip (see buildKnockoutMask), so
- *  "remove background color" keeps matching the colors visible in the
- *  ORIGINAL artwork regardless of the invert. */
+ *  p.invert is a true color negative applied at the START of the chain
+ *  (Photoshop's Adjustments → Invert): every channel flips, so saturation,
+ *  contrast and the levels act on the negative image and art-in-marks / CMYK
+ *  show the inverted colors. Flipping colors also flips which areas print —
+ *  light artwork prints, dark artwork becomes paper, the workflow for
+ *  screening designs onto dark garments. The knockout mask compensates for
+ *  the flip (see buildKnockoutMask), so "remove background color" keeps
+ *  matching the colors visible in the ORIGINAL artwork regardless. */
 export function adjustImageData(img: ImageData, p: HalftoneParams): void {
   const sat = p.tone === 'color' ? 1 + p.saturation : 0
   const con = 1 + p.contrast
@@ -231,6 +239,11 @@ export function adjustImageData(img: ImageData, p: HalftoneParams): void {
     let r = d[i] / 255
     let g = d[i + 1] / 255
     let b = d[i + 2] / 255
+    if (inv) {
+      r = 1 - r
+      g = 1 - g
+      b = 1 - b
+    }
     if (sat !== 1) {
       const lum = 0.299 * r + 0.587 * g + 0.114 * b
       r = lum + (r - lum) * sat
@@ -260,10 +273,25 @@ export function adjustImageData(img: ImageData, p: HalftoneParams): void {
       }
       if (sh !== 0) {
         if (lum > 0.02) {
+          // scale RGB toward the new luminance; if that would clip a channel,
+          // renormalize ALL channels by the same factor — clamping channels
+          // independently repaints lifted shadows blue/green and burnt
+          // highlights yellow (the ratios between channels must survive)
           const f = (lum + sh) / lum
-          r *= f
-          g *= f
-          b *= f
+          let nr = r * f
+          let ng = g * f
+          let nb = b * f
+          const mx = Math.max(nr, ng, nb)
+          if (mx > 1) {
+            nr /= mx
+            ng /= mx
+            nb /= mx
+          } else if (mx < 0) {
+            nr = ng = nb = 0
+          }
+          r = nr
+          g = ng
+          b = nb
         } else {
           r += sh
           g += sh
@@ -276,17 +304,9 @@ export function adjustImageData(img: ImageData, p: HalftoneParams): void {
       g += shift
       b += shift
     }
-    let R = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
-    let G = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
-    let B = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
-    if (inv) {
-      R = 255 - R
-      G = 255 - G
-      B = 255 - B
-    }
-    d[i] = R
-    d[i + 1] = G
-    d[i + 2] = B
+    d[i] = r <= 0 ? 0 : r >= 1 ? 255 : (r * 255) | 0
+    d[i + 1] = g <= 0 ? 0 : g >= 1 ? 255 : (g * 255) | 0
+    d[i + 2] = b <= 0 ? 0 : b >= 1 ? 255 : (b * 255) | 0
     d[i + 3] = 255
     px++
     if (px === w) {
@@ -890,28 +910,84 @@ export function rasterizeZebra(
   return out
 }
 
-/** Mask: 0 where source pixel matches the knockout color, 1 elsewhere.
+/** Mask: 0 where the picked color range is knocked out, 1 where ink survives.
  *  Soft ramp between tol and tol*1.25 so boundaries fade rather than jag.
  *  Runs on the ADJUSTED image, and adjustImageData may have inverted it —
  *  inverting the knockout color too keeps the match pinned to the colors
  *  visible in the ORIGINAL artwork (channel distance is symmetric under
  *  inversion), so "remove the white/black/pink background" means the same
- *  thing with or without the invert toggle. */
+ *  thing with or without the invert toggle.
+ *
+ *  Modes:
+ *  - 'remove': knock out the picked color range. With p.knockoutConnected
+ *    the range only goes where it is CONNECTED to the image border (4-way
+ *    flood fill) — the actual background. Shapes of the same color enclosed
+ *    inside the design (white letters on a white background) survive with
+ *    their ink instead of being wiped along with the background.
+ *  - 'keep': knock out everything OUTSIDE the picked range — extract only
+ *    that color from the design. */
 export function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
   const kc0 = hexToRgb01(p.knockoutColor)
   const kc = p.invert ? ([1 - kc0[0], 1 - kc0[1], 1 - kc0[2]] as const) : kc0
   const lo = p.knockoutTolerance
   const hi = lo * 1.25 + 0.02
   const d = img.data
-  const mask = new Float32Array(d.length / 4).fill(1)
-  for (let i = 0, j = 0; i < mask.length; i++, j += 4) {
-    const dist = Math.max(
+  const n = d.length / 4
+  const w = img.width
+  const h = img.height
+  const mask = new Float32Array(n).fill(1)
+  const distAt = (i: number): number => {
+    const j = i * 4
+    return Math.max(
       Math.abs(d[j] / 255 - kc[0]),
       Math.abs(d[j + 1] / 255 - kc[1]),
       Math.abs(d[j + 2] / 255 - kc[2]),
     )
+  }
+  if (p.knockoutMode === 'keep') {
+    for (let i = 0; i < n; i++) {
+      const dist = distAt(i)
+      if (dist <= lo) mask[i] = 1
+      else if (dist < hi) mask[i] = (hi - dist) / (hi - lo)
+      else mask[i] = 0
+    }
+    return mask
+  }
+  for (let i = 0; i < n; i++) {
+    const dist = distAt(i)
     if (dist <= lo) mask[i] = 0
     else if (dist < hi) mask[i] = (dist - lo) / (hi - lo)
+  }
+  if (p.knockoutConnected) {
+    // flood the picked range inward from the borders; whatever the flood
+    // never reaches is part of the design and keeps its ink
+    const flooded = new Uint8Array(n)
+    const q = new Int32Array(n)
+    let qh = 0
+    let qt = 0
+    const seed = (i: number) => {
+      if (!flooded[i] && distAt(i) < hi) {
+        flooded[i] = 1
+        q[qt++] = i
+      }
+    }
+    for (let x = 0; x < w; x++) {
+      seed(x)
+      seed((h - 1) * w + x)
+    }
+    for (let y = 0; y < h; y++) {
+      seed(y * w)
+      seed(y * w + w - 1)
+    }
+    while (qh < qt) {
+      const i = q[qh++]
+      const x = i % w
+      if (x > 0) seed(i - 1)
+      if (x < w - 1) seed(i + 1)
+      if (i >= w) seed(i - w)
+      if (i < n - w) seed(i + w)
+    }
+    for (let i = 0; i < n; i++) if (!flooded[i]) mask[i] = 1
   }
   return mask
 }
