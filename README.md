@@ -37,8 +37,9 @@ Exposure, contrast, level pivot, blur/sharpen, and more — applied to the conti
 The workspace preview *is* the SVG: it is built by the same vector engine and rasterized by the browser at working resolution. Every export button writes that exact geometry.
 
 - **SVG vector export** — the master output: dots leave as true `<circle>` elements (squares/diamonds/ellipses as `<rect>`/`<polygon>`/`<ellipse>`, lines/waves/zebra as polygon strips) read from the same rank tables as the screen, so the file is geometrically identical to the preview at any scale. CMYK exports as four multiply-blended plate groups; art-in-marks embeds the adjusted artwork masked through the vector marks
-- **PNG export** — a rasterization of that same SVG at the export resolution (`cellScale = previewW / exportW` keeps the LPI identical), so the PNG matches the preview and the printed SVG pixel-for-pixel in structure
-- **Crisp 1-bit PNG (film mode)** — optionally the marks are supersampled 2× and thresholded to pure black-and-white (zero gray pixels, verified by probe) for screen-print film positives; CMYK rosettes keep smooth blended edges
+- **PNG export** — a rasterization of that same SVG at the export resolution (`cellScale = previewW / exportW` keeps the LPI identical), so the PNG matches the preview and the printed SVG pixel-for-pixel in structure. Smooth anti-aliased edges by default — what you see is what you get
+- **Crisp 1-bit PNG (film mode, opt-in)** — for screen-print film positives the marks are supersampled 2× and thresholded to pure black-and-white (zero gray pixels, verified by probe); CMYK rosettes keep smooth blended edges. Off by default so the PNG matches the preview exactly
+- **Test backdrop** — paint the workspace behind the marks (black, white, gray, navy, pink swatches or any color) and judge the design against the shirt color before exporting. Preview only: exports never include it
 - **WYSIWYG ruling** — a 96-PPI preview and a 300-PPI export produce identical dot structure, like Photoshop's Bitmap → Halftone Screen
 
 ---

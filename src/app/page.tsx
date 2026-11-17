@@ -283,6 +283,16 @@ export default function HalftoneStudio() {
     return () => clearTimeout(t)
   }, [params, ready, fitView])
 
+  // preview-only backdrop: paint behind the marks so the design can be
+  // judged against a garment color. Lives on the canvas element's CSS
+  // background, so the exported SVG/PNG (which rasterize their own
+  // geometry) never see it.
+  useEffect(() => {
+    const cv = viewRef.current
+    if (!cv) return
+    cv.style.backgroundColor = params.bgPreview ? params.bgColor : 'transparent'
+  }, [params.bgPreview, params.bgColor])
+
   const onFile = useCallback(
     (f: File | undefined) => {
       if (!f) return
@@ -1176,6 +1186,63 @@ export default function HalftoneStudio() {
                     Export keeps only the marks — paper becomes transparent alpha.
                     Turn on B&amp;W tone for a true 1-bit transparent PNG.
                   </p>
+                )}
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">
+                    Test backdrop
+                    <span className="block text-[10px] text-zinc-500">
+                      paint the workspace behind the marks — judge the print
+                      against the shirt color. Preview only: exports keep their
+                      own background
+                    </span>
+                  </Label>
+                  <Switch
+                    checked={params.bgPreview}
+                    onCheckedChange={(v) => set('bgPreview', v)}
+                    aria-label="Paint a backdrop color behind the preview marks"
+                  />
+                </div>
+                {params.bgPreview && (
+                  <>
+                    <div className="flex items-center gap-1.5">
+                      {(
+                        [
+                          ['#000000', 'Black'],
+                          ['#ffffff', 'White'],
+                          ['#e5e5e5', 'Gray'],
+                          ['#1e293b', 'Navy'],
+                          ['#ec4899', 'Pink'],
+                        ] as [string, string][]
+                      ).map(([c, label]) => (
+                        <button
+                          key={c}
+                          aria-label={`Backdrop ${label}`}
+                          title={label}
+                          onClick={() => set('bgColor', c)}
+                          className={`h-7 w-7 rounded border ${
+                            params.bgColor.toLowerCase() === c
+                              ? 'ring-2 ring-amber-500'
+                              : 'border-zinc-700'
+                          }`}
+                          style={{ backgroundColor: c }}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        value={params.bgColor}
+                        onChange={(e) => set('bgColor', e.target.value)}
+                        className="h-8 w-12 cursor-pointer rounded border border-zinc-700 bg-zinc-900"
+                        aria-label="Backdrop color"
+                      />
+                    </div>
+                    {!params.transparent && (
+                      <p className="text-xs leading-relaxed text-zinc-500">
+                        The paper is opaque white right now — turn on
+                        Transparent background to see the shirt color between
+                        the marks.
+                      </p>
+                    )}
+                  </>
                 )}
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">

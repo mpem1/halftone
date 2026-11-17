@@ -99,7 +99,9 @@ export interface HalftoneParams {
   uniformPlates: boolean // CMYK: all plates share one angle (Photoshop Color Halftone look) vs rosette offsets
   inkColor: string // hex, single mode
   transparent: boolean // marks on transparent background (alpha PNG)
-  crisp: boolean // hard 1-bit mark edges — no anti-aliasing (print mode)
+  crisp: boolean // hard 1-bit mark edges — no anti-aliasing (film mode; off = WYSIWYG like the preview)
+  bgPreview: boolean // preview-only backdrop color behind the marks — never exported
+  bgColor: string // hex, preview backdrop color
   invert: boolean // invert image tones before screening (light = ink, for dark garments)
   inkFloor: number // 0..0.9 minimum ink coverage for kept areas — pale artwork stops washing out
   knockout: boolean // remove background-colored source areas before screening
@@ -136,7 +138,9 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   uniformPlates: false,
   inkColor: '#000000',
   transparent: false,
-  crisp: true,
+  crisp: false,
+  bgPreview: false,
+  bgColor: '#000000',
   invert: false,
   inkFloor: 0,
   knockout: false,
