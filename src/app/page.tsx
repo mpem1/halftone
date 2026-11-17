@@ -22,6 +22,7 @@ import {
   PLATE_ANGLES,
   SHAPE_LABELS,
   ZEBRA_STYLE_LABELS,
+  type EdgeFadeShape,
   type HalftoneParams,
   type OutputMode,
   type PlateFilter,
@@ -1366,6 +1367,79 @@ export default function HalftoneStudio() {
                       display={`${Math.round(params.knockoutTolerance * 100)}%`}
                       onChange={(v) => set('knockoutTolerance', v)}
                     />
+                  </>
+                )}
+              </Section>
+
+              {/* edge fade — soften the borders before screening */}
+              <Section title="Edge fade">
+                <div className="flex items-center justify-between">
+                  <Label className="text-xs text-zinc-300">
+                    Fade edges before halftone
+                    <span className="block text-[10px] text-zinc-500">
+                      soften a full-square image: marks thin out and vanish
+                      toward the chosen shape so the print blends into the
+                      garment instead of ending in a hard border
+                    </span>
+                  </Label>
+                  <Switch
+                    checked={params.edgeFade}
+                    onCheckedChange={(v) => set('edgeFade', v)}
+                    aria-label="Fade the image edges before halftoning"
+                  />
+                </div>
+                {params.edgeFade && (
+                  <>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {(
+                        [
+                          ['circle', 'Circle', 'M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18'],
+                          ['oval', 'Oval', 'M12 5c5 0 8 3.1 8 7s-3 7-8 7s-8-3.1-8-7s3-7 8-7'],
+                          ['square', 'Square', 'M5 5h14v14H5z'],
+                          ['rect', 'Rectangle', 'M3 7h18v10H3z'],
+                          ['diamond', 'Diamond', 'M12 3l9 9l-9 9l-9-9z'],
+                        ] as [EdgeFadeShape, string, string][]
+                      ).map(([shape, label, d]) => (
+                        <button
+                          key={shape}
+                          title={label}
+                          aria-label={`Fade shape ${label}`}
+                          onClick={() => set('edgeFadeShape', shape)}
+                          className={`flex h-9 items-center justify-center rounded border ${
+                            params.edgeFadeShape === shape
+                              ? 'border-amber-500 bg-amber-500/15 text-amber-400'
+                              : 'border-zinc-700 text-zinc-400 hover:border-zinc-500'
+                          }`}
+                        >
+                          <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden="true">
+                            <path d={d} fill="none" stroke="currentColor" strokeWidth="1.6" />
+                          </svg>
+                        </button>
+                      ))}
+                    </div>
+                    <SliderField
+                      label="Shape size"
+                      value={params.edgeFadeSize}
+                      min={40}
+                      max={150}
+                      step={1}
+                      display={`${params.edgeFadeSize}%`}
+                      onChange={(v) => set('edgeFadeSize', v)}
+                    />
+                    <SliderField
+                      label="Blur / fade distance"
+                      value={params.edgeFadeFeather}
+                      min={0}
+                      max={160}
+                      step={1}
+                      display={`${params.edgeFadeFeather} px`}
+                      onChange={(v) => set('edgeFadeFeather', v)}
+                    />
+                    <p className="text-xs leading-relaxed text-zinc-500">
+                      Size 100% reaches the image edges; push it higher to keep
+                      more art solid. 0 px fade distance crops the image to the
+                      shape instead of fading it. Exports match the preview.
+                    </p>
                   </>
                 )}
               </Section>

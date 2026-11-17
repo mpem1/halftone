@@ -44,7 +44,7 @@
 import {
   adjustImageData,
   blurInk,
-  buildKnockoutMask,
+  combinedMask,
   lineSeal,
   PLATES,
   sampleMap,
@@ -428,7 +428,7 @@ export function renderHalftoneSVG(
   const ctx = src.getContext('2d')!
   const adjId = ctx.getImageData(0, 0, w, h)
   adjustImageData(adjId, p)
-  const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
+  const mask = combinedMask(adjId, p)
   const n = w * h
   const theta = (p.angleDeg * Math.PI) / 180
 

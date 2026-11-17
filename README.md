@@ -31,6 +31,7 @@ Exposure, contrast, level pivot, blur/sharpen, and more — applied to the conti
 - **Targeted exposure (dodge & burn)** — brush a region on the image and lighten or darken just that area before screening
 - **Ink floor (solid coverage)** — guarantee every kept area prints at least N% ink: pale artwork (skin, highlights, white lettering) stays solid instead of dissolving into paper holes on dark garments, so the subject reads full-bodied on the shirt after the white paper is removed. The knockout still clears the background
 - **Invert** — flips the artwork at the end of the adjustment chain, so a black design with white/blue details screens correctly onto a black shirt (invert on) or a white shirt (invert off, knock out the black background)
+- **Edge fade** — soften full-bleed art before screening: pick a boundary shape (circle, oval, square, rectangle, diamond), set how far the solid shape reaches and the fade distance, and the marks thin out toward the edges instead of stopping at a hard square border — the print blends into the garment. Applied before halftoning, so exports match the preview; at 0 px distance it crops the image to the shape
 
 ### Export — one geometry, three outputs
 

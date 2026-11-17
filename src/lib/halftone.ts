@@ -75,6 +75,8 @@ export type ZebraStyle = 'waves' | 'lines' | 'rings' | 'spiral' | 'rays'
 export type OutputMode = 'single' | 'cmyk'
 export type PlateFilter = 'all' | 'C' | 'M' | 'Y' | 'K'
 export type ToneMode = 'color' | 'gray' | 'bw'
+/** boundary geometry for the edge fade — circle/oval/square/rect/diamond */
+export type EdgeFadeShape = 'circle' | 'oval' | 'square' | 'rect' | 'diamond'
 
 export interface HalftoneParams {
   mode: OutputMode
@@ -102,6 +104,10 @@ export interface HalftoneParams {
   crisp: boolean // hard 1-bit mark edges — no anti-aliasing (film mode; off = WYSIWYG like the preview)
   bgPreview: boolean // preview-only backdrop color behind the marks — never exported
   bgColor: string // hex, preview backdrop color
+  edgeFade: boolean // fade image edges to paper before screening — soft borders on full-bleed art
+  edgeFadeShape: EdgeFadeShape // fade boundary geometry
+  edgeFadeSize: number // % of the half-min-dimension the solid shape reaches (100 = touches the edges)
+  edgeFadeFeather: number // fade distance in px across the shape boundary (0 = hard shape crop)
   invert: boolean // invert image tones before screening (light = ink, for dark garments)
   inkFloor: number // 0..0.9 minimum ink coverage for kept areas — pale artwork stops washing out
   knockout: boolean // remove background-colored source areas before screening
@@ -141,6 +147,10 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   crisp: false,
   bgPreview: false,
   bgColor: '#000000',
+  edgeFade: false,
+  edgeFadeShape: 'circle',
+  edgeFadeSize: 100,
+  edgeFadeFeather: 24,
   invert: false,
   inkFloor: 0.7,
   knockout: false,
@@ -916,6 +926,68 @@ export function rasterizeZebra(
  *    their ink instead of being wiped along with the background.
  *  - 'keep': knock out everything OUTSIDE the picked range — extract only
  *    that color from the design. */
+/* ------------------------------------------------------------------ */
+/* Edge fade: fade the image to paper before screening so full-bleed   */
+/* art gets soft borders instead of a hard square edge. A geometric    */
+/* boundary (circle/oval/square/rect/diamond) surrounds the image; ink */
+/* inside it is untouched, and across `feather` px the mask falls      */
+/* smoothly to zero — marks thin out toward the edge in BOTH render    */
+/* paths (it multiplies into the same mask the knockout uses).         */
+/* ------------------------------------------------------------------ */
+export function buildEdgeFadeMask(w: number, h: number, p: HalftoneParams): Float32Array {
+  const m = new Float32Array(w * h)
+  const s = p.edgeFadeSize / 100
+  const f = Math.max(0, p.edgeFadeFeather)
+  const cx = w / 2
+  const cy = h / 2
+  const r0 = (Math.min(w, h) / 2) * s // circle / square / diamond reach
+  const rx = (w / 2) * s // oval / rect half-width
+  const ry = (h / 2) * s // oval / rect half-height
+  const mrx = Math.max(rx, 1)
+  const mry = Math.max(ry, 1)
+  for (let y = 0; y < h; y++) {
+    const dy = y + 0.5 - cy
+    for (let x = 0; x < w; x++) {
+      const dx = x + 0.5 - cx
+      // signed distance in px, positive outside the solid shape
+      let d: number
+      switch (p.edgeFadeShape) {
+        case 'oval':
+          d = (Math.hypot(dx / mrx, dy / mry) - 1) * Math.min(rx, ry)
+          break
+        case 'square':
+          d = Math.max(Math.abs(dx), Math.abs(dy)) - r0
+          break
+        case 'rect':
+          d = (Math.max(Math.abs(dx) / mrx, Math.abs(dy) / mry) - 1) * Math.min(rx, ry)
+          break
+        case 'diamond':
+          d = (Math.abs(dx) + Math.abs(dy)) / Math.max(r0, 1) - 1
+          break
+        default: // circle
+          d = Math.hypot(dx, dy) - r0
+      }
+      // 50% opacity at the boundary, full fade across `feather` px
+      let a = f > 0 ? Math.min(1, Math.max(0, 0.5 - d / f)) : d <= 0 ? 1 : 0
+      if (f > 0 && a > 0 && a < 1) a = a * a * (3 - 2 * a)
+      m[y * w + x] = a
+    }
+  }
+  return m
+}
+
+/* combined per-pixel mark mask: knockout ∩ edge fade — render paths
+ * multiply ink by this once, so the features compose and every
+ * downstream branch (single / CMYK / 1-bit) picks them up unchanged */
+export function combinedMask(img: ImageData, p: HalftoneParams): Float32Array | null {
+  const fade = p.edgeFade ? buildEdgeFadeMask(img.width, img.height, p) : null
+  const mask = p.knockout ? buildKnockoutMask(img, p) : null
+  if (!fade) return mask
+  if (!mask) return fade
+  for (let i = 0; i < mask.length; i++) mask[i] *= fade[i]
+  return mask
+}
+
 export function buildKnockoutMask(img: ImageData, p: HalftoneParams): Float32Array {
   const kc0 = hexToRgb01(p.knockoutColor)
   const kc = p.invert ? ([1 - kc0[0], 1 - kc0[1], 1 - kc0[2]] as const) : kc0
@@ -1048,7 +1120,7 @@ export function renderHalftone(
   if (p.mode === 'single') {
     // ink map from adjusted luminance (+ background knockout)
     const d = adjId.data
-    const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
+    const mask = combinedMask(adjId, p)
     const inkMap: Float32Array = new Float32Array(n)
     const floor = p.inkFloor
     for (let i = 0, j = 0; i < n; i++, j += 4) {
@@ -1111,7 +1183,7 @@ export function renderHalftone(
   } else {
     // CMYK separation, multiply-composited in image space
     const d = adjId.data
-    const mask = p.knockout ? buildKnockoutMask(adjId, p) : null
+    const mask = combinedMask(adjId, p)
     const chan: Float32Array[] = [
       new Float32Array(n),
       new Float32Array(n),
