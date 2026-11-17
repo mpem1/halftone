@@ -974,12 +974,33 @@ export function buildEdgeFadeMask(w: number, h: number, p: HalftoneParams): Floa
           break
         }
         case 'diamond': {
-          // superellipse exponent 1 + rounding: p=1 sharp diamond,
-          // p=2 fully rounded (= the oval)
-          const pw = 1 + p.edgeFadeRound / 100
-          const dd =
-            Math.pow(Math.abs(dx) / mrx, pw) + Math.pow(Math.abs(dy) / mry, pw)
-          d = (Math.pow(dd, 1 / pw) - 1) * Math.min(rx, ry)
+          // true tip rounding — erode the diamond by r, then dilate back:
+          // the four edges stay exactly on the original outline and each
+          // sharp vertex is cut by an arc of radius r tangent to both
+          // adjacent edges, so the shape never swells past its sharp
+          // outline. At 100% the radius reaches the inradius and the
+          // diamond becomes its inscribed circle.
+          const s = Math.hypot(1 / mrx, 1 / mry) // |∇(|x|/rx + |y|/ry)|
+          const inr = 1 / s // diamond inradius
+          const r = (p.edgeFadeRound / 100) * inr
+          const k = 1 - r * s // erosion scale — edges shift inward by r
+          if (k <= 1e-4) {
+            d = Math.hypot(dx, dy) - inr // fully rounded: the inscribed circle
+            break
+          }
+          const ax = rx * k // eroded vertex on the x axis
+          const by = ry * k // eroded vertex on the y axis
+          const X = Math.abs(dx)
+          const Y = Math.abs(dy)
+          // exact distance to the eroded diamond — after the axis fold all
+          // four edges mirror to the segment from (ax, 0) to (0, by)
+          const t = Math.max(
+            0,
+            Math.min(1, (-(X - ax) * ax + Y * by) / (ax * ax + by * by)),
+          )
+          const seg = Math.hypot(X - (ax - ax * t), Y - by * t)
+          const inside = X / ax + Y / by <= 1
+          d = (inside ? -seg : seg) - r
           break
         }
         default: // circle

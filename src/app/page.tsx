@@ -1463,10 +1463,13 @@ export default function HalftoneStudio() {
                       the other to turn a vertical rectangle horizontal or make
                       it squarer. Oval, rectangle and diamond stretch freely;
                       circle and square stay true to shape (the smaller value
-                      wins). Round corners softens the sharp vertices of
-                      square, rectangle and diamond — at 100% a square becomes
-                      a circle. 0 px fade distance crops the image to the shape
-                      instead of fading it. Exports match the preview.
+                      wins). Round corners cuts the sharp vertices of
+                      square, rectangle and diamond with real arcs — edges
+                      stay put, tips blunt out; at 100% a square becomes a
+                      circle and a diamond its inscribed circle, and the
+                      shape never swells past its sharp outline. 0 px fade
+                      distance crops the image to the shape instead of
+                      fading it. Exports match the preview.
                     </p>
                   </>
                 )}
