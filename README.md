@@ -2,9 +2,11 @@
 
 **▶ Open the app: [https://mpem1.github.io/halftone/](https://mpem1.github.io/halftone/)**
 
-A browser-based halftone screen-room: turn any image into print-ready halftones with a Photoshop-style workflow — continuous tone in, 1-bit dots out.
+A browser-based halftone screen-room: turn any image into print-ready halftones with a Photoshop-style workflow — continuous tone in, screened marks out.
 
-Built with Next.js + Canvas 2D. No upload, no server processing: every pixel is screened locally in your browser. Nothing to install — the link above is the whole app.
+Built with Next.js + SVG. No upload, no server processing: every pixel is screened locally in your browser. Nothing to install — the link above is the whole app.
+
+**One engine, three outputs.** The workspace preview, the PNG download and the SVG file are all rendered from the *same* vector geometry — what you see is mathematically what you print, at any resolution.
 
 ## Features
 
@@ -13,11 +15,11 @@ Built with Next.js + Canvas 2D. No upload, no server processing: every pixel is 
 - **Angle control** — 0–180° screen angle per the classic print convention
 - **Photoshop-workflow ruling** — set **Output resolution (PPI)** × **Frequency (LPI)** like Photoshop's Bitmap → Halftone Screen dialog; cell size is derived from `PPI / LPI` instead of raw pixels, so what you set is what prints
 - **Euclidean round screen** — the dot spot is the true circle screen (Photoshop's "Round"): dots stay *perfect circles* up to ~78.5% tone, where neighbors physically touch, then invert into round paper holes. Rank calibration keeps dot area exactly equal to tone
-- **Zebra flow screens** — ZebraTrace-style engraving: continuous parallel curves whose width follows the image tone, in five curve families — **waves, lines, rings, spiral, rays** — with a flow (meander) control and width limit; raster preview and SVG export share the same curve math
+- **Zebra flow screens** — ZebraTrace-style engraving: continuous parallel curves whose width follows the image tone, in five curve families — **waves, lines, rings, spiral, rays** — with a flow (meander) control and width limit; preview, PNG and SVG share the same curve math
 - **Continuous-tone screening** — the source is never binarized before screening (the #1 cause of ugly halftones). Gray levels go into the screen; a 1-bit dot pattern comes out. B&W mode is a true Bitmap-mode equivalent
 - **Rank-calibrated spot functions** — mark area is proportional to tone for every shape (method calibrated against storytold/photocraft's cosine screens)
 - **CMYK separation** — four plates at print angles (C 15° / M 75° / Y 0° / K 45°) with an optional **uniform angle** mode for screen printing
-- **Crisp / anti-aliased output** — crisp mode renders hard-edged 1-bit dots (0 gray pixels, verified by probe); AA mode supersamples small cells so tiny dots keep their circular silhouette
+- **Smooth vector marks everywhere** — marks are true vector contours, so preview, PNG and SVG all show smooth, printer-grade edges; screen printers get hard 1-bit edges from the PNG option below
 - **Art in marks** — fill the marks with the source artwork itself instead of flat ink
 
 ### Adjustments
@@ -25,10 +27,14 @@ Exposure, contrast, level pivot, blur/sharpen, and more — applied to the conti
 - **Split-tone levels** — lift or crush shadows and highlights independently, so you can recover detail in faces or skies without shifting the whole image
 - **Targeted exposure (dodge & burn)** — brush a region on the image and lighten or darken just that area before screening
 
-### Export
-- **SVG vector export** — dots leave as true `<circle>` elements (squares/diamonds/ellipses as `<rect>`/`<polygon>`/`<ellipse>`, lines/waves/zebra as polygon strips) read from the same rank tables as the raster screen, so the vector file is geometrically identical to the preview at any scale. CMYK exports as four multiply-blended plate groups; art-in-marks embeds the adjusted artwork masked through the vector marks
-- **WYSIWYG PNG export** — the same LPI ruling is preserved at export resolution (`cellScale = previewW / exportW`), so a 96-PPI preview and a 300-PPI export produce identical dot structure
-- 1-bit output verification: exports contain zero intermediate gray pixels in crisp mode
+### Export — one geometry, three outputs
+
+The workspace preview *is* the SVG: it is built by the same vector engine and rasterized by the browser at working resolution. Every export button writes that exact geometry.
+
+- **SVG vector export** — the master output: dots leave as true `<circle>` elements (squares/diamonds/ellipses as `<rect>`/`<polygon>`/`<ellipse>`, lines/waves/zebra as polygon strips) read from the same rank tables as the screen, so the file is geometrically identical to the preview at any scale. CMYK exports as four multiply-blended plate groups; art-in-marks embeds the adjusted artwork masked through the vector marks
+- **PNG export** — a rasterization of that same SVG at the export resolution (`cellScale = previewW / exportW` keeps the LPI identical), so the PNG matches the preview and the printed SVG pixel-for-pixel in structure
+- **Crisp 1-bit PNG (film mode)** — optionally the marks are supersampled 2× and thresholded to pure black-and-white (zero gray pixels, verified by probe) for screen-print film positives; CMYK rosettes keep smooth blended edges
+- **WYSIWYG ruling** — a 96-PPI preview and a 300-PPI export produce identical dot structure, like Photoshop's Bitmap → Halftone Screen
 
 ---
 

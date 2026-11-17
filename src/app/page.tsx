@@ -22,7 +22,6 @@ import {
   PLATE_ANGLES,
   SHAPE_LABELS,
   ZEBRA_STYLE_LABELS,
-  renderHalftone,
   type HalftoneParams,
   type OutputMode,
   type PlateFilter,
@@ -31,6 +30,7 @@ import {
   type ZebraStyle,
 } from '@/lib/halftone'
 import { renderHalftoneSVG } from '@/lib/halftoneSvg'
+import { rasterizeSvg, rasterizeSvgCrisp } from '@/lib/svgRender'
 
 const MAX_WORK = 1800 // working resolution cap (long edge)
 const MAX_EXPORT = 2600 // export resolution cap
@@ -130,7 +130,7 @@ export default function HalftoneStudio() {
   const viewRef = useRef<HTMLCanvasElement | null>(null)
   const origRef = useRef<HTMLImageElement | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
-  const rafRef = useRef(0)
+  const svgJobRef = useRef(0)
 
   // --- zoom / pan viewport ---
   const stageRef = useRef<HTMLDivElement | null>(null)
@@ -253,24 +253,34 @@ export default function HalftoneStudio() {
     img.src = `${process.env.NEXT_PUBLIC_BASE_PATH ?? ''}/sample.jpg`
   }, [loadSource])
 
-  // render on parameter change (rAF-throttled)
+  // render on parameter change. The workspace shows the SAME vector geometry
+  // as the SVG and PNG exports: build the SVG from the working image, let the
+  // browser rasterize it at working resolution, blit to the view canvas.
+  // A job id drops stale renders when sliders outpace the rasterizer.
   useEffect(() => {
     if (!ready || !srcRef.current || !viewRef.current) return
-    cancelAnimationFrame(rafRef.current)
-    rafRef.current = requestAnimationFrame(() => {
-      const ms = renderHalftone(
-        srcRef.current!,
-        viewRef.current!,
-        params,
-        params.mode === 'cmyk' ? 1400 : undefined,
-      )
-      setRenderMs(Math.round(ms))
-      if (fitPendingRef.current) {
-        fitPendingRef.current = false
-        fitView()
-      }
-    })
-    return () => cancelAnimationFrame(rafRef.current)
+    const job = ++svgJobRef.current
+    const t = setTimeout(() => {
+      const src = srcRef.current
+      const cv = viewRef.current
+      if (!src || !cv) return
+      const t0 = performance.now()
+      const svg = renderHalftoneSVG(src, params, 1)
+      rasterizeSvg(svg, src.width, src.height)
+        .then((out) => {
+          if (job !== svgJobRef.current) return
+          cv.width = out.width
+          cv.height = out.height
+          cv.getContext('2d')!.drawImage(out, 0, 0)
+          setRenderMs(Math.round(performance.now() - t0))
+          if (fitPendingRef.current) {
+            fitPendingRef.current = false
+            fitView()
+          }
+        })
+        .catch(() => {})
+    }, 40)
+    return () => clearTimeout(t)
   }, [params, ready, fitView])
 
   const onFile = useCallback(
@@ -304,14 +314,32 @@ export default function HalftoneStudio() {
       const bctx = big.getContext('2d')!
       bctx.imageSmoothingQuality = 'high'
       bctx.drawImage(img, 0, 0, w, h)
-      const out = document.createElement('canvas')
-      // keep the SAME screen ruling as the preview: the cell pitch scales
-      // with the resolution jump, so dots per image width stay identical
-      // (same LPI, higher DPI) and the export matches what was on screen.
+      // The PNG is a rasterization of the EXACT SVG geometry that the
+      // workspace shows and the SVG export writes — same cellScale math, so
+      // dots-per-width stay identical across preview, PNG and SVG (same LPI,
+      // higher DPI), and the marks render vector-crisp at the export size.
       const workMax = params.mode === 'cmyk' ? 1400 : MAX_WORK
       const workScale = Math.min(1, workMax / Math.max(img.naturalWidth, img.naturalHeight))
       const workW = Math.max(2, Math.round(img.naturalWidth * workScale))
-      renderHalftone(big, out, params, undefined, w / workW)
+      const cellScale = w / workW
+      let out: HTMLCanvasElement
+      if (params.mode === 'single' && params.crisp) {
+        // hard 1-bit film output: threshold the mark-coverage alpha of the
+        // background-free variant at 50% (2× supersampled)
+        const covSvg = renderHalftoneSVG(big, { ...params, transparent: true }, cellScale)
+        const colorSvg = renderHalftoneSVG(big, params, cellScale)
+        out = await rasterizeSvgCrisp(
+          covSvg,
+          colorSvg,
+          w,
+          h,
+          params.inkColor,
+          params.keepArt,
+          params.transparent,
+        )
+      } else {
+        out = await rasterizeSvg(renderHalftoneSVG(big, params, cellScale), w, h)
+      }
       const blob = await new Promise<Blob | null>((res) => out.toBlob(res, 'image/png'))
       if (blob) {
         const a = document.createElement('a')
@@ -327,9 +355,9 @@ export default function HalftoneStudio() {
     }
   }, [params])
 
-  /** Vector twin of exportPng: same ruling math (cellScale = w/workW),
-   *  but the marks leave as true SVG geometry — circles stay circles at
-   *  any print resolution. */
+  /** Writes the same SVG geometry the workspace shows and the PNG export
+   *  rasterizes — as a true vector file: circles stay circles at any print
+   *  resolution, making this the master output of the studio. */
   const exportSvg = useCallback(async () => {
     if (!origRef.current) return
     setExporting(true)
@@ -969,18 +997,26 @@ export default function HalftoneStudio() {
                 )}
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
-                    Crisp 1-bit edges (print)
+                    Crisp 1-bit PNG (film output)
                     <span className="block text-[10px] text-zinc-500">
-                      Hard threshold like Photoshop&apos;s Bitmap → Halftone
-                      Screen. Off = smooth anti-aliased edges.
+                      PNG export only: threshold marks to hard 1-bit like
+                      Photoshop&apos;s Bitmap mode — for screen-print film
+                      positives. Off = smooth edges, exactly like the preview
+                      and the SVG file.
                     </span>
                   </Label>
                   <Switch
                     checked={params.crisp}
                     onCheckedChange={(v) => set('crisp', v)}
-                    aria-label="Render marks with hard one-bit edges"
+                    aria-label="Export PNG with hard one-bit edges"
                   />
                 </div>
+                {isCmyk && params.crisp && (
+                  <p className="text-[10px] leading-relaxed text-zinc-500">
+                    CMYK rosettes keep smooth blended edges — coverage isn&apos;t
+                    meaningful per plate inside a multiply composite.
+                  </p>
+                )}
               </Section>
 
               {/* print ruling — Photoshop Bitmap → Halftone Screen units */}
