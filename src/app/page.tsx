@@ -1435,6 +1435,19 @@ export default function HalftoneStudio() {
                       display={`${params.edgeFadeH}%`}
                       onChange={(v) => set('edgeFadeH', v)}
                     />
+                    {(params.edgeFadeShape === 'square' ||
+                      params.edgeFadeShape === 'rect' ||
+                      params.edgeFadeShape === 'diamond') && (
+                      <SliderField
+                        label="Round corners"
+                        value={params.edgeFadeRound}
+                        min={0}
+                        max={100}
+                        step={1}
+                        display={`${params.edgeFadeRound}%`}
+                        onChange={(v) => set('edgeFadeRound', v)}
+                      />
+                    )}
                     <SliderField
                       label="Blur / fade distance"
                       value={params.edgeFadeFeather}
@@ -1450,7 +1463,9 @@ export default function HalftoneStudio() {
                       the other to turn a vertical rectangle horizontal or make
                       it squarer. Oval, rectangle and diamond stretch freely;
                       circle and square stay true to shape (the smaller value
-                      wins). 0 px fade distance crops the image to the shape
+                      wins). Round corners softens the sharp vertices of
+                      square, rectangle and diamond — at 100% a square becomes
+                      a circle. 0 px fade distance crops the image to the shape
                       instead of fading it. Exports match the preview.
                     </p>
                   </>

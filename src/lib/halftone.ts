@@ -109,6 +109,7 @@ export interface HalftoneParams {
   edgeFadeW: number // % of image width the solid shape reaches (100 = touches the left/right edges)
   edgeFadeH: number // % of image height the solid shape reaches (100 = touches the top/bottom edges)
   edgeFadeFeather: number // fade distance in px across the shape boundary (0 = hard shape crop)
+  edgeFadeRound: number // 0..100% corner rounding for square / rect / diamond (100 = square becomes a circle)
   invert: boolean // invert image tones before screening (light = ink, for dark garments)
   inkFloor: number // 0..0.9 minimum ink coverage for kept areas — pale artwork stops washing out
   knockout: boolean // remove background-colored source areas before screening
@@ -153,6 +154,7 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   edgeFadeW: 100,
   edgeFadeH: 100,
   edgeFadeFeather: 24,
+  edgeFadeRound: 0,
   invert: false,
   inkFloor: 0.7,
   knockout: false,
@@ -960,14 +962,26 @@ export function buildEdgeFadeMask(w: number, h: number, p: HalftoneParams): Floa
           d = (Math.hypot(dx / mrx, dy / mry) - 1) * Math.min(rx, ry)
           break
         case 'square':
-          d = Math.max(Math.abs(dx), Math.abs(dy)) - minAxis
+        case 'rect': {
+          // rounded-box SDF — radius from the Round corners slider;
+          // square keeps equal half-extents, 100% rounding = circle
+          const bx = p.edgeFadeShape === 'square' ? minAxis : rx
+          const by = p.edgeFadeShape === 'square' ? minAxis : ry
+          const r = (p.edgeFadeRound / 100) * Math.min(bx, by)
+          const qx = Math.abs(dx) - Math.max(bx - r, 0)
+          const qy = Math.abs(dy) - Math.max(by - r, 0)
+          d = Math.min(Math.max(qx, qy), 0) + Math.hypot(Math.max(qx, 0), Math.max(qy, 0)) - r
           break
-        case 'rect':
-          d = (Math.max(Math.abs(dx) / mrx, Math.abs(dy) / mry) - 1) * Math.min(rx, ry)
+        }
+        case 'diamond': {
+          // superellipse exponent 1 + rounding: p=1 sharp diamond,
+          // p=2 fully rounded (= the oval)
+          const pw = 1 + p.edgeFadeRound / 100
+          const dd =
+            Math.pow(Math.abs(dx) / mrx, pw) + Math.pow(Math.abs(dy) / mry, pw)
+          d = (Math.pow(dd, 1 / pw) - 1) * Math.min(rx, ry)
           break
-        case 'diamond':
-          d = (Math.abs(dx) / mrx + Math.abs(dy) / mry - 1) * Math.min(rx, ry)
-          break
+        }
         default: // circle
           d = Math.hypot(dx, dy) - minAxis
       }
