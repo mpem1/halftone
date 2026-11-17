@@ -106,7 +106,8 @@ export interface HalftoneParams {
   bgColor: string // hex, preview backdrop color
   edgeFade: boolean // fade image edges to paper before screening — soft borders on full-bleed art
   edgeFadeShape: EdgeFadeShape // fade boundary geometry
-  edgeFadeSize: number // % of the half-min-dimension the solid shape reaches (100 = touches the edges)
+  edgeFadeW: number // % of image width the solid shape reaches (100 = touches the left/right edges)
+  edgeFadeH: number // % of image height the solid shape reaches (100 = touches the top/bottom edges)
   edgeFadeFeather: number // fade distance in px across the shape boundary (0 = hard shape crop)
   invert: boolean // invert image tones before screening (light = ink, for dark garments)
   inkFloor: number // 0..0.9 minimum ink coverage for kept areas — pale artwork stops washing out
@@ -149,7 +150,8 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   bgColor: '#000000',
   edgeFade: false,
   edgeFadeShape: 'circle',
-  edgeFadeSize: 100,
+  edgeFadeW: 100,
+  edgeFadeH: 100,
   edgeFadeFeather: 24,
   invert: false,
   inkFloor: 0.7,
@@ -936,13 +938,15 @@ export function rasterizeZebra(
 /* ------------------------------------------------------------------ */
 export function buildEdgeFadeMask(w: number, h: number, p: HalftoneParams): Float32Array {
   const m = new Float32Array(w * h)
-  const s = p.edgeFadeSize / 100
   const f = Math.max(0, p.edgeFadeFeather)
   const cx = w / 2
   const cy = h / 2
-  const r0 = (Math.min(w, h) / 2) * s // circle / square / diamond reach
-  const rx = (w / 2) * s // oval / rect half-width
-  const ry = (h / 2) * s // oval / rect half-height
+  // width / height reach on separate axes — push one higher for a wider
+  // shape, lower for a squarer one. Circle and square stay true to shape
+  // (the smaller of the two axes wins); oval / rect / diamond stretch freely.
+  const rx = (w / 2) * (p.edgeFadeW / 100) // half-width in px
+  const ry = (h / 2) * (p.edgeFadeH / 100) // half-height in px
+  const minAxis = Math.min(rx, ry) // circle / square radius
   const mrx = Math.max(rx, 1)
   const mry = Math.max(ry, 1)
   for (let y = 0; y < h; y++) {
@@ -956,16 +960,16 @@ export function buildEdgeFadeMask(w: number, h: number, p: HalftoneParams): Floa
           d = (Math.hypot(dx / mrx, dy / mry) - 1) * Math.min(rx, ry)
           break
         case 'square':
-          d = Math.max(Math.abs(dx), Math.abs(dy)) - r0
+          d = Math.max(Math.abs(dx), Math.abs(dy)) - minAxis
           break
         case 'rect':
           d = (Math.max(Math.abs(dx) / mrx, Math.abs(dy) / mry) - 1) * Math.min(rx, ry)
           break
         case 'diamond':
-          d = ((Math.abs(dx) + Math.abs(dy)) / Math.max(r0, 1) - 1) * Math.max(r0, 1)
+          d = (Math.abs(dx) / mrx + Math.abs(dy) / mry - 1) * Math.min(rx, ry)
           break
         default: // circle
-          d = Math.hypot(dx, dy) - r0
+          d = Math.hypot(dx, dy) - minAxis
       }
       // 50% opacity at the boundary, full fade across `feather` px
       let a = f > 0 ? Math.min(1, Math.max(0, 0.5 - d / f)) : d <= 0 ? 1 : 0

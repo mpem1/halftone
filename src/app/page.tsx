@@ -1418,13 +1418,22 @@ export default function HalftoneStudio() {
                       ))}
                     </div>
                     <SliderField
-                      label="Shape size"
-                      value={params.edgeFadeSize}
+                      label="Shape width"
+                      value={params.edgeFadeW}
                       min={40}
                       max={150}
                       step={1}
-                      display={`${params.edgeFadeSize}%`}
-                      onChange={(v) => set('edgeFadeSize', v)}
+                      display={`${params.edgeFadeW}%`}
+                      onChange={(v) => set('edgeFadeW', v)}
+                    />
+                    <SliderField
+                      label="Shape height"
+                      value={params.edgeFadeH}
+                      min={40}
+                      max={150}
+                      step={1}
+                      display={`${params.edgeFadeH}%`}
+                      onChange={(v) => set('edgeFadeH', v)}
                     />
                     <SliderField
                       label="Blur / fade distance"
@@ -1436,9 +1445,13 @@ export default function HalftoneStudio() {
                       onChange={(v) => set('edgeFadeFeather', v)}
                     />
                     <p className="text-xs leading-relaxed text-zinc-500">
-                      Size 100% reaches the image edges; push it higher to keep
-                      more art solid. 0 px fade distance crops the image to the
-                      shape instead of fading it. Exports match the preview.
+                      Width and height set how far the shape reaches on each
+                      axis — 100% touches the image edges; raise one and lower
+                      the other to turn a vertical rectangle horizontal or make
+                      it squarer. Oval, rectangle and diamond stretch freely;
+                      circle and square stay true to shape (the smaller value
+                      wins). 0 px fade distance crops the image to the shape
+                      instead of fading it. Exports match the preview.
                     </p>
                   </>
                 )}
