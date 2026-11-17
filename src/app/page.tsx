@@ -100,14 +100,44 @@ type ViewState = { z: number; x: number; y: number }
 function Section({
   title,
   children,
+  bg,
 }: {
   title: string
   children: React.ReactNode
+  /** card background hex — tints the section so the sidebar breaks up */
+  bg?: string
 }) {
+  // rough sRGB luminance of the tint: on lighter section colors the dim
+  // zinc-500 hint text and zinc-400 labels fall below readable contrast,
+  // so those utility tones get lifted (see the [data-tint] rules in
+  // globals.css); the darker tints keep the standard dim tones
+  const tint =
+    bg &&
+    (() => {
+      const n = parseInt(bg.slice(1), 16)
+      const ch = (v: number) => {
+        const c = v / 255
+        return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4)
+      }
+      return 0.2126 * ch((n >> 16) & 255) + 0.7152 * ch((n >> 8) & 255) + 0.0722 * ch(n & 255) > 0.06
+        ? 'light'
+        : 'dark'
+    })()
   return (
-    <Card className="border-zinc-800 bg-zinc-900/60">
+    <Card
+      className="border-zinc-800 bg-zinc-900/60"
+      style={bg ? { backgroundColor: bg } : undefined}
+      data-tint={tint}
+    >
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm font-medium tracking-wide text-zinc-400 uppercase">
+        <CardTitle
+          className={
+            // on tinted cards the default zinc-400 heading drops below
+            // readable contrast — lift it alongside the background
+            bg ? 'text-sm font-medium tracking-wide text-zinc-200 uppercase'
+               : 'text-sm font-medium tracking-wide text-zinc-400 uppercase'
+          }
+        >
           {title}
         </CardTitle>
       </CardHeader>
@@ -854,7 +884,8 @@ export default function HalftoneStudio() {
         <aside className="w-full shrink-0 lg:w-[340px]" aria-label="Controls">
           <div className="studio-scroll space-y-4 pb-6 lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto lg:pr-2">
               {/* mode */}
-              <Section title="Output mode">
+              <Section title="Output mode"
+                bg="#2D222F">
                 <div className="grid grid-cols-2 gap-2">
                   {(
                     [
@@ -955,7 +986,8 @@ export default function HalftoneStudio() {
 
               {/* mark fill — flat ink vs artwork-in-halftone */}
               {!isCmyk && (
-                <Section title="Mark fill">
+                <Section title="Mark fill"
+                bg="#2D222F">
                   <div className="grid grid-cols-2 gap-2">
                     <Button
                       size="sm"
@@ -1005,7 +1037,8 @@ export default function HalftoneStudio() {
               )}
 
               {/* print ruling — Photoshop Bitmap → Halftone Screen units */}
-              <Section title="Print ruling (ppi × lpi)">
+              <Section title="Print ruling (ppi × lpi)"
+                bg="#2D222F">
                 <div className="grid grid-cols-4 gap-1.5">
                   {[150, 300, 600, 1200].map((v) => (
                     <Button
@@ -1048,7 +1081,8 @@ export default function HalftoneStudio() {
               </Section>
 
               {/* screen */}
-              <Section title="Screen">
+              <Section title="Screen"
+                bg="#4B2138">
                 <div className="grid grid-cols-4 gap-1.5">
                   {SHAPES.map((s) => (
                     <button
@@ -1196,7 +1230,8 @@ export default function HalftoneStudio() {
               </Section>
 
               {/* adjustments */}
-              <Section title="Image adjustments">
+              <Section title="Image adjustments"
+                bg="#6D3C52">
                 <div className="grid grid-cols-3 gap-1.5">
                   {(
                     [
@@ -1320,7 +1355,8 @@ export default function HalftoneStudio() {
               </Section>
 
               {/* background & transparency */}
-              <Section title="Background">
+              <Section title="Background"
+                bg="#765D67">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">Transparent background</Label>
                   <Switch
@@ -1496,7 +1532,8 @@ export default function HalftoneStudio() {
               </Section>
 
               {/* edge fade — soften the borders before screening */}
-              <Section title="Edge fade">
+              <Section title="Edge fade"
+                bg="#2D222F">
                 <div className="flex items-center justify-between">
                   <Label className="text-xs text-zinc-300">
                     Fade edges before halftone
@@ -1600,7 +1637,8 @@ export default function HalftoneStudio() {
               </Section>
 
               {/* target area — local dodge & burn before screening */}
-              <Section title="Target area">
+              <Section title="Target area"
+                bg="#2D222F">
                 <Button
                   size="sm"
                   variant={spotMode ? 'default' : 'outline'}

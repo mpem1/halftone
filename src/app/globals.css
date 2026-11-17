@@ -140,3 +140,11 @@
 }
 .studio-scroll::-webkit-scrollbar-thumb:hover { background: #52525b; }
 .studio-scroll { scrollbar-width: thin; scrollbar-color: #3f3f46 transparent; }
+
+/* halftone studio: tinted section cards. On the lighter section colors the
+   dim zinc-500 hint text and zinc-400 labels fall below readable contrast —
+   lift those utility tones inside light-tinted cards only (Section marks
+   each card with data-tint based on the tint's luminance). Unlayered rules
+   so they win over the layered Tailwind utilities. */
+[data-tint='light'] .text-zinc-500 { color: #dccfd6; }
+[data-tint='light'] .text-zinc-400 { color: #e6dce1; }
