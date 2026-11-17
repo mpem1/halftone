@@ -962,7 +962,7 @@ export function buildEdgeFadeMask(w: number, h: number, p: HalftoneParams): Floa
           d = (Math.max(Math.abs(dx) / mrx, Math.abs(dy) / mry) - 1) * Math.min(rx, ry)
           break
         case 'diamond':
-          d = (Math.abs(dx) + Math.abs(dy)) / Math.max(r0, 1) - 1
+          d = ((Math.abs(dx) + Math.abs(dy)) / Math.max(r0, 1) - 1) * Math.max(r0, 1)
           break
         default: // circle
           d = Math.hypot(dx, dy) - r0
