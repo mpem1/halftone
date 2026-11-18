@@ -155,6 +155,9 @@ export default function HalftoneStudio() {
   // halftone. Pure view state — exports never read it.
   const [abCompare, setAbCompare] = useState(false)
   const [ready, setReady] = useState(false)
+  // working-canvas size (source downscaled to MAX_WORK) — the edge fade
+  // offset sliders step in real px, so their range follows this size
+  const [workSize, setWorkSize] = useState({ w: 0, h: 0 })
   // print ruling (Photoshop Bitmap → Halftone Screen semantics):
   // output resolution in ppi × screen frequency in lpi → cell pitch
   const [dpi, setDpi] = useState(300)
@@ -275,6 +278,7 @@ export default function HalftoneStudio() {
     ctx.drawImage(img, 0, 0, w, h)
     srcRef.current = c
     origRef.current = img
+    setWorkSize({ w, h })
     fitPendingRef.current = true
     setFileName(name)
     setReady(true)
@@ -1599,19 +1603,19 @@ export default function HalftoneStudio() {
                     <SliderField
                       label="Offset X"
                       value={params.edgeFadeX}
-                      min={-100}
-                      max={100}
+                      min={-Math.max(1, Math.floor(workSize.w / 2))}
+                      max={Math.max(1, Math.floor(workSize.w / 2))}
                       step={1}
-                      display={`${params.edgeFadeX > 0 ? '+' : ''}${params.edgeFadeX}%`}
+                      display={`${params.edgeFadeX} px`}
                       onChange={(v) => set('edgeFadeX', v)}
                     />
                     <SliderField
                       label="Offset Y"
                       value={params.edgeFadeY}
-                      min={-100}
-                      max={100}
+                      min={-Math.max(1, Math.floor(workSize.h / 2))}
+                      max={Math.max(1, Math.floor(workSize.h / 2))}
                       step={1}
-                      display={`${params.edgeFadeY > 0 ? '+' : ''}${params.edgeFadeY}%`}
+                      display={`${params.edgeFadeY} px`}
                       onChange={(v) => set('edgeFadeY', v)}
                     />
                     <SliderField
@@ -1643,9 +1647,10 @@ export default function HalftoneStudio() {
                       it squarer. Oval, rectangle and diamond stretch freely;
                       circle and square stay true to shape (the smaller value
                       wins). Offset X / Y slide the whole fade shape across
-                      the image when the artwork isn't centered — +X moves
-                      it right, +Y moves it down; the image itself never
-                      moves. Round corners cuts the sharp vertices of
+                      the image in 1 px steps (± half the image size) when
+                      the artwork isn't centered — +X moves it right, +Y
+                      moves it down; the image itself never moves. Round
+                      corners cuts the sharp vertices of
                       square, rectangle and diamond with real arcs — edges
                       stay put, tips blunt out; at 100% a square becomes a
                       circle and a diamond its inscribed circle, and the
