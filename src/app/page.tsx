@@ -1597,6 +1597,24 @@ export default function HalftoneStudio() {
                       onChange={(v) => set('edgeFadeH', v)}
                     />
                     <SliderField
+                      label="Offset X"
+                      value={params.edgeFadeX}
+                      min={-100}
+                      max={100}
+                      step={1}
+                      display={`${params.edgeFadeX > 0 ? '+' : ''}${params.edgeFadeX}%`}
+                      onChange={(v) => set('edgeFadeX', v)}
+                    />
+                    <SliderField
+                      label="Offset Y"
+                      value={params.edgeFadeY}
+                      min={-100}
+                      max={100}
+                      step={1}
+                      display={`${params.edgeFadeY > 0 ? '+' : ''}${params.edgeFadeY}%`}
+                      onChange={(v) => set('edgeFadeY', v)}
+                    />
+                    <SliderField
                       label="Round corners"
                       value={params.edgeFadeRound}
                       min={0}
@@ -1624,7 +1642,10 @@ export default function HalftoneStudio() {
                       the other to turn a vertical rectangle horizontal or make
                       it squarer. Oval, rectangle and diamond stretch freely;
                       circle and square stay true to shape (the smaller value
-                      wins). Round corners cuts the sharp vertices of
+                      wins). Offset X / Y slide the whole fade shape across
+                      the image when the artwork isn't centered — +X moves
+                      it right, +Y moves it down; the image itself never
+                      moves. Round corners cuts the sharp vertices of
                       square, rectangle and diamond with real arcs — edges
                       stay put, tips blunt out; at 100% a square becomes a
                       circle and a diamond its inscribed circle, and the

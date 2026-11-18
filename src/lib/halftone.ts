@@ -110,6 +110,8 @@ export interface HalftoneParams {
   edgeFadeH: number // % of image height the solid shape reaches (100 = touches the top/bottom edges)
   edgeFadeFeather: number // fade distance in px across the shape boundary (0 = hard shape crop)
   edgeFadeRound: number // 0..100% corner rounding for square / rect / diamond (100 = square becomes a circle)
+  edgeFadeX: number // −100..100% of image width — slides the fade shape sideways for off-center artwork
+  edgeFadeY: number // −100..100% of image height — slides the fade shape up / down
   invert: boolean // invert image tones before screening (light = ink, for dark garments)
   inkFloor: number // 0..0.9 minimum ink coverage for kept areas — pale artwork stops washing out
   knockout: boolean // remove background-colored source areas before screening
@@ -155,6 +157,8 @@ export const DEFAULT_PARAMS: HalftoneParams = {
   edgeFadeH: 100,
   edgeFadeFeather: 24,
   edgeFadeRound: 0,
+  edgeFadeX: 0,
+  edgeFadeY: 0,
   invert: false,
   inkFloor: 0.7,
   knockout: false,
@@ -941,8 +945,11 @@ export function rasterizeZebra(
 export function buildEdgeFadeMask(w: number, h: number, p: HalftoneParams): Float32Array {
   const m = new Float32Array(w * h)
   const f = Math.max(0, p.edgeFadeFeather)
-  const cx = w / 2
-  const cy = h / 2
+  // X / Y offsets slide the whole shape across the image (± 100% of the
+  // dimension) — for artwork whose subject isn't centered; the image
+  // itself never moves
+  const cx = w / 2 + (p.edgeFadeX / 100) * w
+  const cy = h / 2 + (p.edgeFadeY / 100) * h
   // width / height reach on separate axes — push one higher for a wider
   // shape, lower for a squarer one. Circle and square stay true to shape
   // (the smaller of the two axes wins); oval / rect / diamond stretch freely.
